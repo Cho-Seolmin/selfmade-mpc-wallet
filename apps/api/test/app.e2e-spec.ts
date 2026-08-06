@@ -38,8 +38,8 @@ describe('App (e2e)', () => {
     await request(app.getHttpServer()).get('/wallets').expect(401);
   });
 
-  it('GET /wallets/kms/info without a token is rejected', async () => {
-    await request(app.getHttpServer()).get('/wallets/kms/info').expect(401);
+  it('GET /wallets/summary without a token is rejected', async () => {
+    await request(app.getHttpServer()).get('/wallets/summary').expect(401);
   });
 
   it('POST /auth/login rejects a malformed email via the global ValidationPipe', async () => {

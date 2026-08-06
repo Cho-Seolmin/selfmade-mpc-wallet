@@ -1,31 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { getMe } from "../api/auth";
+import { useLocation, useNavigate } from "react-router-dom";
+import { getMe, logout } from "../api/auth";
 import { getPreferences } from "../api/settings";
 import { getSystemStatus } from "../api/system";
-import { getWallets } from "../api/wallet";
-import type { Wallet } from "../types/wallet";
 import type { Me } from "../types/auth";
 import { applyTheme, getStoredTheme } from "../lib/theme";
-import { logout } from "../api/auth";
-import { socket } from "../lib/socket";
 import {
-  addStoredNotification,
   clearStoredNotifications,
-  getNotificationCategoryPrefs,
   getStoredNotifications,
-  statusToCategory,
   type AppNotification,
 } from "../lib/notifications";
 import "./AppShell.css";
 
-type NavKey = "dashboard" | "wallets" | "admin" | "settings";
+type NavKey = "dashboard" | "settings";
 
 type NavItem = {
   key: NavKey;
   label: string;
-  path?: string;
+  path: string;
   icon: ReactNode;
 };
 
@@ -36,24 +29,6 @@ function DashboardIcon() {
       <rect x="14" y="3" width="7" height="5" rx="1.5" />
       <rect x="14" y="12" width="7" height="9" rx="1.5" />
       <rect x="3" y="16" width="7" height="5" rx="1.5" />
-    </svg>
-  );
-}
-
-function WalletIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="6" width="18" height="13" rx="2.5" />
-      <path d="M3 9.5h18" />
-      <circle cx="16.5" cy="13.7" r="1.1" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-function AdminIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z" />
     </svg>
   );
 }
@@ -103,33 +78,8 @@ function LogoutIcon() {
   );
 }
 
-function ChevronIcon({ open }: { open: boolean }) {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      style={{
-        marginLeft: "auto",
-        transform: open ? "rotate(90deg)" : "rotate(0deg)",
-        transition: "transform 0.15s ease",
-        flexShrink: 0,
-      }}
-    >
-      <path d="M9 6l6 6-6 6" />
-    </svg>
-  );
-}
-
 const NAV_ITEMS: NavItem[] = [
   { key: "dashboard", label: "Dashboard", path: "/dashboard", icon: <DashboardIcon /> },
-  { key: "wallets", label: "Wallets", path: "/wallets", icon: <WalletIcon /> },
-  { key: "admin", label: "Admin", path: "/admin", icon: <AdminIcon /> },
   { key: "settings", label: "Settings", path: "/settings", icon: <SettingsIcon /> },
 ];
 
@@ -140,13 +90,8 @@ type AppShellProps = {
 export default function AppShell({ children }: AppShellProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const [searchParams] = useSearchParams();
 
-  const [wallets, setWallets] = useState<Wallet[]>([]);
   const [me, setMe] = useState<Me | null>(null);
-  const [walletsOpen, setWalletsOpen] = useState(() =>
-    location.pathname.startsWith("/wallets"),
-  );
   const [theme, setTheme] = useState(() => getStoredTheme());
 
   const [notifications, setNotifications] = useState<AppNotification[]>(() =>
@@ -164,31 +109,9 @@ export default function AppShell({ children }: AppShellProps) {
     applyTheme(next);
   };
 
-  const activeKey: NavKey = location.pathname.startsWith("/admin")
-    ? "admin"
-    : location.pathname.startsWith("/wallets")
-    ? "wallets"
-    : location.pathname.startsWith("/settings")
+  const activeKey: NavKey = location.pathname.startsWith("/settings")
     ? "settings"
     : "dashboard";
-
-  const selectedWalletId = searchParams.get("walletId");
-
-  useEffect(() => {
-    let cancelled = false;
-
-    getWallets()
-      .then((data) => {
-        if (!cancelled) setWallets(data);
-      })
-      .catch(() => {
-        // 사이드바용 목록 조회 실패는 조용히 무시 (각 페이지에서 별도로 에러를 표시함)
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -246,54 +169,6 @@ export default function AppShell({ children }: AppShellProps) {
   }, []);
 
   useEffect(() => {
-    const walletLabel = (type?: string) => {
-      switch (type) {
-        case "MULTISIG":
-          return "MULTISIG 지갑";
-        case "BACKEND_SEC":
-          return "BACKEND_SEC 지갑";
-        case "POLICY_GUARD":
-          return "POLICY_GUARD 지갑";
-        case "KMS":
-          return "KMS 지갑";
-        case "MPC":
-          return "MPC 지갑";
-        case "SSS":
-          return "SSS 지갑";
-        default:
-          return "지갑";
-      }
-    };
-
-    const handleWithdrawUpdated = (payload: {
-      walletId: string;
-      walletType?: string;
-      status: string;
-    }) => {
-      if (!inAppEnabledRef.current) return;
-
-      const category = statusToCategory(payload.status);
-      if (category && !getNotificationCategoryPrefs()[category]) return;
-
-      const notification: AppNotification = {
-        id: `${payload.walletId}-${Date.now()}`,
-        message: `${walletLabel(payload.walletType)} 출금 상태가 "${payload.status}"(으)로 변경되었습니다.`,
-        createdAt: new Date().toISOString(),
-        walletId: payload.walletId,
-      };
-
-      setNotifications(addStoredNotification(notification));
-      setUnreadCount((prev) => prev + 1);
-    };
-
-    socket.on("withdraw.updated", handleWithdrawUpdated);
-
-    return () => {
-      socket.off("withdraw.updated", handleWithdrawUpdated);
-    };
-  }, []);
-
-  useEffect(() => {
     if (!notifOpen) return;
 
     const handleClickOutside = (event: MouseEvent) => {
@@ -337,20 +212,6 @@ export default function AppShell({ children }: AppShellProps) {
     navigate("/login");
   };
 
-  const handleNavClick = (item: NavItem) => {
-    if (!item.path) return;
-
-    if (item.key === "wallets") {
-      setWalletsOpen((prev) => (activeKey === "wallets" ? !prev : true));
-    }
-
-    navigate(item.path);
-  };
-
-  const handleWalletSelect = (walletId: string) => {
-    navigate(`/wallets?walletId=${walletId}`);
-  };
-
   return (
     <div className="app-shell">
       <aside className="app-shell__sidebar">
@@ -358,7 +219,7 @@ export default function AppShell({ children }: AppShellProps) {
           <span className="app-shell__brand-mark">CS</span>
           <span className="app-shell__brand-text">
             <span className="app-shell__brand-name">Custody Vault</span>
-            <span className="app-shell__brand-sub">Security Wallet</span>
+            <span className="app-shell__brand-sub">MPC Wallet</span>
           </span>
           <div className="app-shell__brand-actions">
             <div className="app-shell__notif-wrap" ref={notifWrapRef}>
@@ -421,45 +282,19 @@ export default function AppShell({ children }: AppShellProps) {
         </div>
 
         <nav className="app-shell__nav">
-          {NAV_ITEMS.filter(
-            (item) => item.key !== "admin" || me?.role === "ADMIN",
-          ).map((item) => (
+          {NAV_ITEMS.map((item) => (
             <div key={item.key}>
               <button
                 type="button"
                 className={`app-shell__nav-item${
                   item.key === activeKey ? " is-active" : ""
                 }`}
-                disabled={!item.path}
-                onClick={() => handleNavClick(item)}
-                title={item.path ? undefined : "준비 중"}
+                onClick={() => navigate(item.path)}
                 aria-current={item.key === activeKey ? "page" : undefined}
-                aria-expanded={item.key === "wallets" ? walletsOpen : undefined}
               >
                 <span className="app-shell__nav-icon">{item.icon}</span>
                 <span>{item.label}</span>
-                {!item.path && <span className="app-shell__nav-badge">Soon</span>}
-                {item.key === "wallets" && wallets.length > 0 && (
-                  <ChevronIcon open={walletsOpen} />
-                )}
               </button>
-
-              {item.key === "wallets" && walletsOpen && wallets.length > 0 && (
-                <div className="app-shell__submenu">
-                  {wallets.map((wallet) => (
-                    <button
-                      key={wallet.id}
-                      type="button"
-                      className={`app-shell__submenu-item${
-                        wallet.id === selectedWalletId ? " is-active" : ""
-                      }`}
-                      onClick={() => handleWalletSelect(wallet.id)}
-                    >
-                      {wallet.walletType}
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
           ))}
         </nav>

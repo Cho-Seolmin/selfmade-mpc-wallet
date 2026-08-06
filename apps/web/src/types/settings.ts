@@ -25,8 +25,6 @@ export type SystemStatus = {
   dbConnected: boolean;
   websocketConnected: boolean;
   sepoliaRpcConnected: boolean;
-  dfnsConnected: boolean;
-  awsKmsConnected: boolean;
   otpConfigured: boolean;
   network: string;
   serverTime: string;

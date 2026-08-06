@@ -40,7 +40,6 @@ export function clearStoredNotifications(): AppNotification[] {
 export type NotificationCategory =
   | "WITHDRAW_COMPLETED"
   | "WITHDRAW_FAILED"
-  | "MULTISIG_APPROVED"
   | "QUEUE_FAILED";
 
 export type NotificationCategoryPrefs = Record<NotificationCategory, boolean>;
@@ -50,7 +49,6 @@ const CATEGORY_STORAGE_KEY = "custody-wallet-notification-categories";
 const DEFAULT_CATEGORY_PREFS: NotificationCategoryPrefs = {
   WITHDRAW_COMPLETED: true,
   WITHDRAW_FAILED: true,
-  MULTISIG_APPROVED: true,
   QUEUE_FAILED: true,
 };
 
@@ -58,9 +56,10 @@ export function getNotificationCategoryPrefs(): NotificationCategoryPrefs {
   if (typeof window === "undefined") return DEFAULT_CATEGORY_PREFS;
   try {
     const raw = window.localStorage.getItem(CATEGORY_STORAGE_KEY);
-    return raw ? { ...DEFAULT_CATEGORY_PREFS, ...JSON.parse(raw) } : { ...DEFAULT_CATEGORY_PREFS };
+    if (!raw) return DEFAULT_CATEGORY_PREFS;
+    return { ...DEFAULT_CATEGORY_PREFS, ...JSON.parse(raw) };
   } catch {
-    return { ...DEFAULT_CATEGORY_PREFS };
+    return DEFAULT_CATEGORY_PREFS;
   }
 }
 
@@ -72,17 +71,16 @@ export function setNotificationCategoryPrefs(prefs: NotificationCategoryPrefs) {
   }
 }
 
-// WithdrawStatus 값을 알림 유형 체크박스 카테고리로 매핑.
-// 매핑되지 않는 상태(PENDING/QUEUED/PROCESSING/REJECTED)는 항상 알림을 표시한다.
-export function statusToCategory(status: string): NotificationCategory | null {
+export function statusToCategory(
+  status: string,
+): NotificationCategory | null {
   switch (status) {
     case "EXECUTED":
       return "WITHDRAW_COMPLETED";
     case "FAILED":
+    case "REJECTED":
       return "WITHDRAW_FAILED";
-    case "APPROVED":
-      return "MULTISIG_APPROVED";
-    case "EXPIRED":
+    case "DEAD":
       return "QUEUE_FAILED";
     default:
       return null;
