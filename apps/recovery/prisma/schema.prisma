@@ -1,0 +1,28 @@
+generator client {
+  provider = "prisma-client-js"
+  /// Isolated client so Recovery does not collide with apps/api Prisma Client.
+  output   = "../src/generated/recovery-client"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("RECOVERY_DATABASE_URL")
+}
+
+/// Share C only. Never store Share A/B or a full private key here.
+model MpcRecoveryShare {
+  id              String    @id @default(cuid())
+  /// Logical FK to main API Wallet.id (cross-database).
+  walletId        String    @unique
+  userId          String
+  /// DKLs party id for Share C (always 2 in 2-of-3).
+  partyId         Int       @default(2)
+  mpcPublicKey    String
+  /// AES-256-GCM ciphertext of Share C bytes (RECOVERY_ENCRYPTION_KEY).
+  encryptedShareC String
+  status          String    @default("ACTIVE")
+  createdAt       DateTime  @default(now())
+  retiredAt       DateTime?
+
+  @@index([userId, status])
+}

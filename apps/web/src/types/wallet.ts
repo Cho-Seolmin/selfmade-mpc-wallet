@@ -1,8 +1,19 @@
+export type WalletStatus =
+  | "ACTIVE"
+  | "RECOVERY_PENDING"
+  | "RETIRING"
+  | "RETIRED";
+
+export type WalletType = "MPC";
+
 export type Wallet = {
   id: string;
   walletType: WalletType;
+  status: WalletStatus;
   address: string;
+  mpcPublicKey?: string | null;
   createdAt: string;
+  retiredAt?: string | null;
   resolvedAddress?: string;
   addressSource?: string;
 };
@@ -11,6 +22,7 @@ export type WalletBalance = {
   walletId: string;
   address: string;
   balanceWei: string;
+  status?: WalletStatus;
 };
 
 export type WithdrawStatus =
@@ -22,8 +34,6 @@ export type WithdrawStatus =
   | "REJECTED"
   | "FAILED"
   | "EXPIRED";
-
-export type WalletType = "MPC";
 
 export type WithdrawItem = {
   id: string;

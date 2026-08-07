@@ -11,7 +11,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@selfmade/mpc-crypto": "file:../../packages/mpc-crypto",
+    "@silencelaboratories/dkls-wasm-ll-web": "^1.2.0",
     "axios": "^1.13.6",
+    "ethers": "^6.17.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.13.1"

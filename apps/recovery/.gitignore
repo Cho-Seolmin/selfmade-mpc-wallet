@@ -1,0 +1,7 @@
+/node_modules
+/dist
+/coverage
+.env
+prisma/recovery.db
+prisma/recovery.db-journal
+src/generated

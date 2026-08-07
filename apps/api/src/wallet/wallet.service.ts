@@ -3,8 +3,16 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { WalletStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SignerService } from './signer.service';
+
+/** Wallets that are still in use (excludes RETIRED). */
+const LIVE_WALLET_STATUSES: WalletStatus[] = [
+  WalletStatus.ACTIVE,
+  WalletStatus.RECOVERY_PENDING,
+  WalletStatus.RETIRING,
+];
 
 @Injectable()
 export class WalletService {
@@ -15,12 +23,19 @@ export class WalletService {
 
   async list(userId: string) {
     const wallets = await this.prisma.wallet.findMany({
-      where: { userId, walletType: 'MPC' },
+      where: {
+        userId,
+        walletType: 'MPC',
+        status: { in: LIVE_WALLET_STATUSES },
+      },
       select: {
         id: true,
         walletType: true,
+        status: true,
         address: true,
+        mpcPublicKey: true,
         createdAt: true,
+        retiredAt: true,
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -34,7 +49,11 @@ export class WalletService {
 
   async getDashboardSummary(userId: string) {
     const wallets = await this.prisma.wallet.findMany({
-      where: { userId, walletType: 'MPC' },
+      where: {
+        userId,
+        walletType: 'MPC',
+        status: { in: LIVE_WALLET_STATUSES },
+      },
       select: { id: true },
     });
 
@@ -93,7 +112,9 @@ export class WalletService {
         id: true,
         userId: true,
         walletType: true,
+        status: true,
         address: true,
+        mpcPublicKey: true,
       },
     });
 
@@ -120,6 +141,7 @@ export class WalletService {
       address: wallet.address,
       balanceWei: balanceWei.toString(),
       source: 'MPC',
+      status: wallet.status,
     };
   }
 

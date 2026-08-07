@@ -27,3 +27,6 @@ Thumbs.db
 
 # Prisma
 apps/api/prisma/dev.db
+apps/recovery/prisma/*.db
+apps/recovery/prisma/*.db-journal
+apps/recovery/src/generated

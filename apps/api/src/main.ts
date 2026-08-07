@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
+import { json } from 'express';
 import { AppModule } from './app.module';
 
 function getFrontendOrigin(): string {
@@ -11,6 +12,8 @@ function getFrontendOrigin(): string {
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // DKLs round messages exchanged with the browser can exceed the default 100kb.
+  app.use(json({ limit: '15mb' }));
   app.use(cookieParser());
 
   app.enableCors({

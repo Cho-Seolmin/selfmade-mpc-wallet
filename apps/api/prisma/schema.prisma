@@ -26,6 +26,16 @@ enum WalletType {
   POLICY_GUARD
 }
 
+/// Lifecycle for MPC (and future) wallets.
+/// Only one non-RETIRED wallet per (userId, walletType) is allowed
+/// via a partial unique index in SQL.
+enum WalletStatus {
+  ACTIVE
+  RECOVERY_PENDING
+  RETIRING
+  RETIRED
+}
+
 enum BalanceUnit {
   ETH
   WEI
@@ -91,13 +101,19 @@ model UserPreference {
 }
 
 model Wallet {
-  id                  String     @id @default(cuid())
-  userId              String
-  walletType          WalletType
-  address             String
-  /// AES-256-GCM payload (iv:authTag:ciphertext). Null for legacy demo wallets.
+  id         String       @id @default(cuid())
+  userId     String
+  walletType WalletType
+  status     WalletStatus @default(ACTIVE)
+  address    String
+  /// Compressed SEC1 public key (0x-prefixed hex). Set for MPC wallets.
+  mpcPublicKey String?
+  /// AES-256-GCM encrypted MPC Share B (not a full private key).
+  encryptedShareB String?
+  /// Legacy AES-256-GCM full private key. Unused for new MPC wallets.
   encryptedPrivateKey String?
-  createdAt           DateTime   @default(now())
+  createdAt  DateTime     @default(now())
+  retiredAt  DateTime?
 
   user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   withdraws           WithdrawRequest[]
@@ -105,7 +121,8 @@ model Wallet {
   whitelist           Whitelist[]
   withdrawalAuditLogs WithdrawalAuditLog[]
 
-  @@unique([userId, walletType])
+  @@index([userId, walletType, status])
+  @@index([userId, status])
 }
 
 model WithdrawRequest {
@@ -166,7 +183,8 @@ model WithdrawalQueue {
 
 model WithdrawalAuditLog {
   id                String         @id @default(cuid())
-  withdrawRequestId String
+  /// Optional so wallet-lifecycle events (e.g. MPC_WALLET_CREATED) can be logged.
+  withdrawRequestId String?
   walletId          String
   userId            String?
   eventType         String
@@ -176,8 +194,8 @@ model WithdrawalAuditLog {
   data              Json?
   createdAt         DateTime       @default(now())
 
-  withdrawRequest WithdrawRequest @relation(fields: [withdrawRequestId], references: [id], onDelete: Cascade)
-  wallet          Wallet          @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  withdrawRequest WithdrawRequest? @relation(fields: [withdrawRequestId], references: [id], onDelete: Cascade)
+  wallet          Wallet           @relation(fields: [walletId], references: [id], onDelete: Cascade)
 
   @@index([withdrawRequestId, createdAt])
   @@index([walletId, createdAt])
