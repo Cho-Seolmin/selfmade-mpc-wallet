@@ -4,6 +4,7 @@ import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import { json } from 'express';
 import { AppModule } from './app.module';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 function getFrontendOrigin(): string {
   return process.env.FRONTEND_URL ?? 'http://localhost:5173';
@@ -29,6 +30,7 @@ async function bootstrap() {
       transformOptions: { enableImplicitConversion: true },
     }),
   );
+  app.useGlobalFilters(new HttpExceptionFilter());
 
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port, '0.0.0.0');

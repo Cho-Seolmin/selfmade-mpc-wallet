@@ -241,7 +241,9 @@ export default function SettingsPage() {
             <div className="settings-row">
               <div className="settings-row__text">
                 <div className="settings-row__label">OTP Authentication</div>
-                <div className="settings-row__desc">고액 출금 시 OTP 인증이 필요합니다.</div>
+                <div className="settings-row__desc">
+                  Recovery File 분실 시 비상 복구(마지막 출금)에 사용합니다.
+                </div>
               </div>
               <span className={`badge badge--${status?.otpConfigured ? "success" : "gray"}`}>
                 {status?.otpConfigured ? "Enabled" : "미설정"}
@@ -286,9 +288,9 @@ export default function SettingsPage() {
             )}
             <div className="settings-row">
               <div className="settings-row__text">
-                <div className="settings-row__label">고액 출금 OTP</div>
+                <div className="settings-row__label">비상 복구 OTP</div>
                 <div className="settings-row__desc">
-                  계정마다 고유 secret이 생성됩니다.
+                  계정마다 JWT에서 파생된 고유 TOTP secret을 사용합니다.
                 </div>
               </div>
               <Switch checked={Boolean(totpSetup)} onChange={() => {}} disabled />

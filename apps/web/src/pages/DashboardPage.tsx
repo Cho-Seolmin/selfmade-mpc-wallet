@@ -1,25 +1,77 @@
 import { useCallback, useEffect, useState } from "react";
-import { getMe } from "../api/auth";
-import { getWalletBalance, getWallets } from "../api/wallet";
-import { createMpcWalletViaDkg } from "../lib/mpc/create-wallet";
-import type { Me } from "../types/auth";
-import type { Wallet } from "../types/wallet";
 import { formatEther } from "ethers";
+import { getMe } from "../api/auth";
+import {
+  emergencyLastWithdraw,
+  getRetiredWallets,
+  getWalletAudits,
+  getWalletBalance,
+  getWalletWithdraws,
+  getWallets,
+  startEmergencyRecovery,
+} from "../api/wallet";
+import EmergencyLastWithdrawModal from "../components/EmergencyLastWithdrawModal";
+import EmergencyOtpModal from "../components/EmergencyOtpModal";
+import RecoveryPinModal from "../components/RecoveryPinModal";
+import RestoreShareModal from "../components/RestoreShareModal";
+import WalletActivityPanel, {
+  type AuditLogItem,
+} from "../components/WalletActivityPanel";
+import { createMpcWalletViaDkg } from "../lib/mpc/create-wallet";
+import {
+  clearLegacySessionShareA,
+  deleteBrowserShareA,
+  hasBrowserShareA,
+} from "../lib/mpc/browser-share-store";
+import { restoreBrowserShareA } from "../lib/mpc/restore-browser-share";
+import {
+  apiErrorMessage,
+  walletStatusBadgeClass,
+  walletStatusHint,
+} from "../lib/wallet-ui";
+import type { Me } from "../types/auth";
+import type { Wallet, WithdrawItem } from "../types/wallet";
 import "../styles/page.css";
 
 export default function DashboardPage() {
   const [me, setMe] = useState<Me | null>(null);
   const [wallet, setWallet] = useState<Wallet | null>(null);
+  const [latestRetired, setLatestRetired] = useState<Wallet | null>(null);
   const [balanceEth, setBalanceEth] = useState<string>("0");
+  const [hasShareA, setHasShareA] = useState(false);
+  const [withdraws, setWithdraws] = useState<WithdrawItem[]>([]);
+  const [audits, setAudits] = useState<AuditLogItem[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [emergencyBusy, setEmergencyBusy] = useState(false);
+  const [lastWithdrawBusy, setLastWithdrawBusy] = useState(false);
+  const [pinModalOpen, setPinModalOpen] = useState(false);
+  const [restoreModalOpen, setRestoreModalOpen] = useState(false);
+  const [emergencyModalOpen, setEmergencyModalOpen] = useState(false);
+  const [lastWithdrawModalOpen, setLastWithdrawModalOpen] = useState(false);
   const [createHint, setCreateHint] = useState("");
 
+  const loadActivity = useCallback(async (walletId: string) => {
+    const [wRows, aRows] = await Promise.all([
+      getWalletWithdraws(walletId).catch(() => [] as WithdrawItem[]),
+      getWalletAudits(walletId, 30).catch(() => [] as AuditLogItem[]),
+    ]);
+    setWithdraws(Array.isArray(wRows) ? wRows : []);
+    setAudits(Array.isArray(aRows) ? aRows : []);
+  }, []);
+
   const refreshWallet = useCallback(async () => {
-    const wallets = await getWallets();
+    const [wallets, retired] = await Promise.all([
+      getWallets(),
+      getRetiredWallets().catch(() => [] as Wallet[]),
+    ]);
     const current = wallets[0] ?? null;
+    const retiredLatest = retired[0] ?? null;
     setWallet(current);
+    setLatestRetired(retiredLatest);
+
     if (current) {
       try {
         const bal = await getWalletBalance(current.id);
@@ -27,10 +79,23 @@ export default function DashboardPage() {
       } catch {
         setBalanceEth("0");
       }
+      try {
+        setHasShareA(await hasBrowserShareA(current.id));
+      } catch {
+        setHasShareA(false);
+      }
+      await loadActivity(current.id);
     } else {
       setBalanceEth("0");
+      setHasShareA(false);
+      if (retiredLatest) {
+        await loadActivity(retiredLatest.id);
+      } else {
+        setWithdraws([]);
+        setAudits([]);
+      }
     }
-  }, []);
+  }, [loadActivity]);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -39,8 +104,8 @@ export default function DashboardPage() {
         const meData = await getMe();
         setMe(meData);
         await refreshWallet();
-      } catch (err: any) {
-        setError(err?.response?.data?.message || "데이터 조회 실패");
+      } catch (err: unknown) {
+        setError(apiErrorMessage(err, "데이터 조회 실패"));
       } finally {
         setLoading(false);
       }
@@ -49,40 +114,194 @@ export default function DashboardPage() {
     fetchData();
   }, [refreshWallet]);
 
-  const onCreate = async () => {
+  const onConfirmPin = async (pin: string) => {
     setError("");
     setCreateHint("");
     setCreating(true);
     try {
       setCreateHint("DKG 진행 중 (Browser A + Server B + Recovery C)...");
-      const result = await createMpcWalletViaDkg();
+      const result = await createMpcWalletViaDkg({ recoveryPin: pin });
+      setPinModalOpen(false);
       setWallet(result.wallet);
+      setHasShareA(true);
       setCreateHint(
-        "지갑이 생성되었습니다. Share A는 이 브라우저 sessionStorage에 임시 저장되었습니다 (STEP 5에서 암호화 저장으로 교체).",
+        "지갑이 생성되었습니다. Share A는 IndexedDB에, Recovery File은 다운로드되었습니다. 파일을 안전한 곳에 보관하세요.",
       );
       await refreshWallet();
-    } catch (err: any) {
-      const msg =
-        err?.response?.data?.message ||
-        err?.message ||
-        "MPC 지갑 생성에 실패했습니다.";
-      setError(Array.isArray(msg) ? msg.join(", ") : String(msg));
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, "MPC 지갑 생성에 실패했습니다."));
     } finally {
       setCreating(false);
     }
+  };
+
+  const onRestoreShare = async (params: {
+    recoveryFileJson: string;
+    pin: string;
+    overwrite: boolean;
+  }) => {
+    if (!wallet) return;
+    setError("");
+    setCreateHint("");
+    setRestoring(true);
+    try {
+      await restoreBrowserShareA({
+        recoveryFileJson: params.recoveryFileJson,
+        pin: params.pin,
+        expectedWallet: {
+          id: wallet.id,
+          address: wallet.address,
+          mpcPublicKey: wallet.mpcPublicKey,
+        },
+        overwrite: params.overwrite,
+      });
+      setRestoreModalOpen(false);
+      setHasShareA(true);
+      setCreateHint(
+        "Share A가 이 브라우저에 복구되었습니다. Recovery File을 다시 분실하지 않도록 보관하세요.",
+      );
+      await refreshWallet();
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, "Share A 복구에 실패했습니다."));
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  const onEmergencyOtp = async (otp: string) => {
+    if (!wallet) return;
+    setError("");
+    setCreateHint("");
+    setEmergencyBusy(true);
+    try {
+      const result = await startEmergencyRecovery(wallet.id, otp);
+      setEmergencyModalOpen(false);
+      setWallet(result.wallet);
+      setCreateHint(result.message);
+      await refreshWallet();
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, "비상 복구 OTP 인증에 실패했습니다."));
+    } finally {
+      setEmergencyBusy(false);
+    }
+  };
+
+  const onLastWithdraw = async (params: {
+    toAddress: string;
+    otp: string;
+  }) => {
+    if (!wallet) return;
+    const retiredId = wallet.id;
+    setError("");
+    setCreateHint("");
+    setLastWithdrawBusy(true);
+    try {
+      const result = await emergencyLastWithdraw(wallet.id, params);
+      setLastWithdrawModalOpen(false);
+      try {
+        await deleteBrowserShareA(retiredId);
+        clearLegacySessionShareA(retiredId);
+      } catch {
+        // Best-effort local wipe; server already RETIRED.
+      }
+      setCreateHint(result.message);
+      setWallet(null);
+      setHasShareA(false);
+      setBalanceEth("0");
+      await refreshWallet();
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, "비상 전액 출금에 실패했습니다."));
+      await refreshWallet();
+    } finally {
+      setLastWithdrawBusy(false);
+    }
+  };
+
+  const onCopyAddress = async () => {
+    if (!wallet) return;
+    try {
+      await navigator.clipboard.writeText(wallet.address);
+      setCreateHint(
+        "입금 주소가 복사되었습니다. Sepolia ETH를 이 주소로 보내면 잔액에 반영됩니다.",
+      );
+      setError("");
+    } catch {
+      setError("주소 복사에 실패했습니다. 주소를 직접 선택해 복사하세요.");
+    }
+  };
+
+  const onWithdrawClick = () => {
+    if (!wallet) return;
+    if (wallet.status === "RECOVERY_PENDING" || wallet.status === "RETIRING") {
+      setLastWithdrawModalOpen(true);
+      return;
+    }
+    if (!hasShareA) {
+      setError(
+        "일반 출금(A+B)에는 Browser Share A가 필요합니다. Recovery File로 복구하거나 비상 복구(OTP)를 사용하세요.",
+      );
+      return;
+    }
+    setCreateHint(
+      "일반 출금(A+B Threshold Signing) UI는 연결 예정입니다. Share A가 준비된 상태입니다.",
+    );
   };
 
   if (loading) {
     return <div className="loading-screen">불러오는 중...</div>;
   }
 
+  const canLastWithdraw =
+    wallet?.status === "RECOVERY_PENDING" || wallet?.status === "RETIRING";
+  const busy =
+    creating || restoring || emergencyBusy || lastWithdrawBusy;
+  const status = wallet?.status ?? "NONE";
+
   return (
     <div className="page">
+      <RecoveryPinModal
+        open={pinModalOpen}
+        busy={creating}
+        onCancel={() => {
+          if (!creating) setPinModalOpen(false);
+        }}
+        onConfirm={onConfirmPin}
+      />
+      <RestoreShareModal
+        open={restoreModalOpen}
+        busy={restoring}
+        walletAddress={wallet?.address ?? ""}
+        alreadyHasShareA={hasShareA}
+        onCancel={() => {
+          if (!restoring) setRestoreModalOpen(false);
+        }}
+        onConfirm={onRestoreShare}
+      />
+      <EmergencyOtpModal
+        open={emergencyModalOpen}
+        busy={emergencyBusy}
+        walletAddress={wallet?.address ?? ""}
+        onCancel={() => {
+          if (!emergencyBusy) setEmergencyModalOpen(false);
+        }}
+        onConfirm={onEmergencyOtp}
+      />
+      <EmergencyLastWithdrawModal
+        open={lastWithdrawModalOpen}
+        busy={lastWithdrawBusy}
+        walletAddress={wallet?.address ?? ""}
+        balanceEth={balanceEth}
+        onCancel={() => {
+          if (!lastWithdrawBusy) setLastWithdrawModalOpen(false);
+        }}
+        onConfirm={onLastWithdraw}
+      />
+
       <header className="page__header">
         <div>
           <h1 className="page__title">Dashboard</h1>
           <p className="page__subtitle">
-            Selfmade MPC Wallet 현황을 확인하세요.
+            2-of-3 MPC 지갑 생성 · 복구 · 비상 출금 현황
           </p>
         </div>
       </header>
@@ -122,16 +341,7 @@ export default function DashboardPage() {
                 color: "var(--color-text-muted)",
               }}
             >
-              권한: {me.role}
-            </p>
-            <p
-              style={{
-                margin: 0,
-                fontSize: "13.5px",
-                color: "var(--color-text-muted)",
-              }}
-            >
-              상태: {me.status}
+              권한: {me.role} · 계정: {me.status}
             </p>
           </div>
         </section>
@@ -140,9 +350,7 @@ export default function DashboardPage() {
       <section className="card section-card">
         <div className="section-header">
           <h2>My MPC Wallet</h2>
-          <span className="badge badge--primary">
-            {wallet?.status ?? "NONE"}
-          </span>
+          <span className={walletStatusBadgeClass(status)}>{status}</span>
         </div>
 
         {!wallet ? (
@@ -154,35 +362,111 @@ export default function DashboardPage() {
                 marginTop: 0,
               }}
             >
-              아직 MPC 지갑이 없습니다. 2-of-3 DKG로 Share A/B/C를 생성합니다.
+              활성 MPC 지갑이 없습니다. DKG로 Share A/B/C를 만들고 Recovery
+              File을 저장하세요.
             </p>
+            {latestRetired && (
+              <div
+                className="alert alert--success"
+                style={{ marginBottom: "14px" }}
+              >
+                이전 지갑이 RETIRED 처리되었습니다.
+                <br />
+                주소: {latestRetired.address}
+                {latestRetired.retiredAt
+                  ? ` · 폐기: ${new Date(latestRetired.retiredAt).toLocaleString()}`
+                  : ""}
+                <br />
+                아래에서 새 지갑을 만들 수 있습니다. 하단에서 이전 출금/감사
+                이력을 확인할 수 있습니다.
+              </div>
+            )}
             <button
               type="button"
               className="btn btn--primary"
               disabled={creating}
-              onClick={onCreate}
+              onClick={() => setPinModalOpen(true)}
             >
-              {creating ? "Creating..." : "Create MPC Wallet"}
+              Create MPC Wallet
             </button>
           </div>
         ) : (
           <>
+            <p
+              style={{
+                fontSize: "13px",
+                color: "var(--color-text-muted)",
+                marginTop: 0,
+                marginBottom: "16px",
+              }}
+            >
+              {walletStatusHint(wallet.status)}
+            </p>
+
             <div className="field" style={{ marginBottom: "16px" }}>
               <label className="input-label">Address</label>
+              <div className="mono-box">{wallet.address}</div>
+            </div>
+
+            <div className="field" style={{ marginBottom: "12px" }}>
+              <label className="input-label">Browser Share A</label>
               <div
                 style={{
-                  fontFamily:
-                    "ui-monospace, SFMono-Regular, Menlo, monospace",
                   fontSize: "13.5px",
-                  color: "var(--color-text)",
-                  padding: "12px 14px",
-                  borderRadius: "10px",
-                  border: "1px solid var(--color-border)",
-                  background: "var(--color-gray-soft)",
-                  wordBreak: "break-all",
+                  color: "var(--color-text-muted)",
+                  marginBottom: "10px",
                 }}
               >
-                {wallet.address}
+                {hasShareA
+                  ? "IndexedDB에 암호화되어 저장됨"
+                  : "이 브라우저에 Share A 없음 — Recovery File로 복구 필요"}
+              </div>
+              <button
+                type="button"
+                className="btn btn--secondary"
+                disabled={busy || canLastWithdraw}
+                onClick={() => setRestoreModalOpen(true)}
+              >
+                {hasShareA ? "Share A 다시 복구" : "Browser Share 복구"}
+              </button>
+            </div>
+
+            <div className="field" style={{ marginBottom: "16px" }}>
+              <label className="input-label">비상 복구</label>
+              <div
+                style={{
+                  fontSize: "13.5px",
+                  color: "var(--color-text-muted)",
+                  marginBottom: "10px",
+                }}
+              >
+                {wallet.status === "RECOVERY_PENDING"
+                  ? "OTP 인증 완료 — 전액 출금(B+C)을 진행하세요."
+                  : wallet.status === "RETIRING"
+                    ? "비상 출금 재시도 가능 (RETIRING)"
+                    : "Recovery File까지 분실한 경우 Google OTP로 시작합니다."}
+              </div>
+              <div className="page__actions" style={{ marginBottom: 0 }}>
+                <button
+                  type="button"
+                  className="btn btn--secondary"
+                  disabled={busy || wallet.status === "RETIRING"}
+                  onClick={() => setEmergencyModalOpen(true)}
+                >
+                  {wallet.status === "RECOVERY_PENDING"
+                    ? "OTP 재확인"
+                    : "비상 복구 (OTP)"}
+                </button>
+                {canLastWithdraw && (
+                  <button
+                    type="button"
+                    className="btn btn--primary"
+                    disabled={busy}
+                    onClick={() => setLastWithdrawModalOpen(true)}
+                  >
+                    전액 출금 (B+C)
+                  </button>
+                )}
               </div>
             </div>
 
@@ -200,15 +484,22 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div
-              className="page__actions"
-              style={{ marginBottom: "24px" }}
-            >
-              <button type="button" className="btn btn--primary" disabled>
-                Deposit
+            <div className="page__actions" style={{ marginBottom: "24px" }}>
+              <button
+                type="button"
+                className="btn btn--primary"
+                disabled={busy}
+                onClick={onCopyAddress}
+              >
+                Deposit (주소 복사)
               </button>
-              <button type="button" className="btn btn--secondary" disabled>
-                Withdraw
+              <button
+                type="button"
+                className="btn btn--secondary"
+                disabled={busy}
+                onClick={onWithdrawClick}
+              >
+                {canLastWithdraw ? "비상 전액 출금" : "Withdraw"}
               </button>
             </div>
           </>
@@ -220,22 +511,7 @@ export default function DashboardPage() {
           </div>
         )}
 
-        <div className="section-header" style={{ marginBottom: "12px" }}>
-          <h3 style={{ margin: 0, fontSize: "15px" }}>Transaction History</h3>
-        </div>
-        <div
-          style={{
-            border: "1px dashed var(--color-border)",
-            borderRadius: "12px",
-            padding: "28px 16px",
-            textAlign: "center",
-            color: "var(--color-text-muted)",
-            fontSize: "13.5px",
-            background: "var(--color-gray-soft)",
-          }}
-        >
-          거래 내역이 없습니다.
-        </div>
+        <WalletActivityPanel withdraws={withdraws} audits={audits} />
       </section>
 
       {error && <div className="alert alert--danger">{error}</div>}

@@ -11,6 +11,9 @@
     "dev:recovery": "npm --workspace apps/recovery run start:dev",
     "build:web": "npm --workspace apps/web run build",
     "build:api": "npm --workspace apps/api run build",
-    "build:recovery": "npm --workspace apps/recovery run build"
+    "build:recovery": "npm --workspace apps/recovery run build",
+    "test:api": "npm --workspace apps/api run test",
+    "test:web": "npm --workspace apps/web run test",
+    "test:integration": "npm --workspace apps/api run test:integration"
   }
 }

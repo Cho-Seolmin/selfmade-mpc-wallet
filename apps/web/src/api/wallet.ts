@@ -12,6 +12,12 @@ export async function getWallets() {
   return res.data as Wallet[];
 }
 
+/** Retired wallet metadata (no secrets). */
+export async function getRetiredWallets() {
+  const res = await api.get("/wallets/retired");
+  return res.data as Wallet[];
+}
+
 export async function getWalletSummary() {
   const res = await api.get("/wallets/summary");
   return res.data as {
@@ -19,6 +25,13 @@ export async function getWalletSummary() {
     totalBalanceWei: string;
     pendingWithdrawCount: number;
     completedWithdrawCount: number;
+    retiredWalletCount: number;
+    latestRetired: {
+      id: string;
+      address: string;
+      retiredAt: string | null;
+    } | null;
+    canCreateMpcWallet: boolean;
   };
 }
 
@@ -98,4 +111,59 @@ export async function dkgComplete(sessionId: string) {
 export async function dkgAbort(sessionId: string) {
   const res = await api.post(`/wallets/mpc/dkg/${sessionId}/abort`);
   return res.data;
+}
+
+/** Google OTP gate → wallet status RECOVERY_PENDING (B+C withdraw comes later). */
+export async function startEmergencyRecovery(walletId: string, otp: string) {
+  const res = await api.post(`/wallets/${walletId}/emergency/start`, { otp });
+  return res.data as {
+    wallet: Wallet;
+    message: string;
+  };
+}
+
+/** B+C full-balance last withdraw → RETIRED. */
+export async function emergencyLastWithdraw(
+  walletId: string,
+  params: { toAddress: string; otp: string },
+) {
+  const res = await api.post(`/wallets/${walletId}/emergency/last-withdraw`, params);
+  return res.data as {
+    wallet: Wallet;
+    withdraw: {
+      id: string;
+      amount: string;
+      toAddress: string;
+      status: string;
+      txHash: string | null;
+    };
+    message: string;
+  };
+}
+
+/** Report non-sensitive browser lifecycle audit (no Share/PIN). */
+export async function reportWalletAuditEvent(
+  walletId: string,
+  body: {
+    eventType: "RECOVERY_FILE_CREATED" | "BROWSER_SHARE_RECOVERED";
+    message?: string;
+    data?: Record<string, unknown>;
+  },
+) {
+  const res = await api.post(`/wallets/${walletId}/audit-events`, body);
+  return res.data as { ok: true; eventType: string };
+}
+
+export async function getWalletAudits(walletId: string, take = 50) {
+  const res = await api.get(`/wallets/${walletId}/audits`, {
+    params: { take },
+  });
+  return res.data as Array<{
+    id: string;
+    eventType: string;
+    actorType: string;
+    message: string | null;
+    data: unknown;
+    createdAt: string;
+  }>;
 }

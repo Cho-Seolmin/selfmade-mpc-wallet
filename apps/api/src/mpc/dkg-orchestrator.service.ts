@@ -20,8 +20,12 @@ import {
   type MpcWireMessage,
 } from '@selfmade/mpc-crypto';
 import { WalletStatus } from '@prisma/client';
+import { AuditEventType } from '../audit/audit.constants';
+import { AuditService } from '../audit/audit.service';
 import { encryptShareB } from '../common/crypto/share-b-encryption';
+import { MpcErrorCode } from '../common/errors/mpc-error-codes';
 import { PrismaService } from '../prisma/prisma.service';
+import { LIVE_WALLET_STATUSES } from '../wallet/wallet-lifecycle';
 import { KeygenSession, Message } from './wasm';
 import { RecoveryClientService } from './recovery-client.service';
 
@@ -58,11 +62,6 @@ type DkgSession = {
 };
 
 const SESSION_TTL_MS = 15 * 60 * 1000;
-const LIVE: WalletStatus[] = [
-  WalletStatus.ACTIVE,
-  WalletStatus.RECOVERY_PENDING,
-  WalletStatus.RETIRING,
-];
 
 @Injectable()
 export class DkgOrchestratorService {
@@ -71,6 +70,7 @@ export class DkgOrchestratorService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly recovery: RecoveryClientService,
+    private readonly audit: AuditService,
   ) {}
 
   /**
@@ -320,18 +320,14 @@ export class DkgOrchestratorService {
         },
       });
 
-      await this.prisma.withdrawalAuditLog.create({
+      await this.audit.write({
+        walletId: wallet.id,
+        userId,
+        eventType: AuditEventType.MPC_WALLET_CREATED,
+        message: '2-of-3 MPC wallet created via DKG',
         data: {
-          walletId: wallet.id,
-          userId,
-          eventType: 'MPC_WALLET_CREATED',
-          actorType: 'USER',
-          actorId: userId,
-          message: '2-of-3 MPC wallet created via DKG',
-          data: {
-            address: wallet.address,
-            sessionId: state.sessionId,
-          },
+          address: wallet.address,
+          sessionId: state.sessionId,
         },
       });
 
@@ -366,12 +362,15 @@ export class DkgOrchestratorService {
       where: {
         userId,
         walletType: 'MPC',
-        status: { in: LIVE },
+        status: { in: LIVE_WALLET_STATUSES },
       },
       select: { id: true },
     });
     if (existing) {
-      throw new ConflictException('Live MPC wallet already exists');
+      throw new ConflictException({
+        message: 'Live MPC wallet already exists',
+        code: MpcErrorCode.LIVE_WALLET_EXISTS,
+      });
     }
   }
 

@@ -15,29 +15,37 @@ import {
   dkgRound3,
   dkgRound4,
   dkgStart,
+  reportWalletAuditEvent,
 } from "../../api/wallet";
 import type { Wallet } from "../../types/wallet";
+import { assertRecoveryPin } from "./browser-crypto";
+import {
+  clearLegacySessionShareA,
+  saveBrowserShareA,
+} from "./browser-share-store";
 import { KeygenSession, Message, ensureMpcWasm } from "./index";
+import {
+  createRecoveryFile,
+  downloadRecoveryFile,
+  type MpcRecoveryFile,
+} from "./recovery-file";
 
-const SHARE_A_STORAGE_PREFIX = "mpc.shareA.";
-
-/** Temporary Share A persistence until STEP 5 (IndexedDB + AES-GCM). */
-export function storeShareATemporary(walletId: string, shareB64: string) {
-  sessionStorage.setItem(`${SHARE_A_STORAGE_PREFIX}${walletId}`, shareB64);
-}
-
-export function loadShareATemporary(walletId: string): string | null {
-  return sessionStorage.getItem(`${SHARE_A_STORAGE_PREFIX}${walletId}`);
-}
+export type CreateMpcWalletResult = {
+  wallet: Wallet;
+  recoveryFile: MpcRecoveryFile;
+};
 
 /**
- * Run browser-side party A through the full 2-of-3 DKG against Main API + Recovery.
- * Returns created wallet and keeps Share A in sessionStorage (STEP 5 hardens storage).
+ * Run browser-side party A through 2-of-3 DKG, then:
+ * 1) encrypt Share A into IndexedDB (device AES key)
+ * 2) build PIN-encrypted Recovery File and trigger download
+ *
+ * Plaintext Share A is only held ephemerally in memory during this function.
  */
-export async function createMpcWalletViaDkg(): Promise<{
-  wallet: Wallet;
-  shareABase64: string;
-}> {
+export async function createMpcWalletViaDkg(params: {
+  recoveryPin: string;
+}): Promise<CreateMpcWalletResult> {
+  assertRecoveryPin(params.recoveryPin);
   await ensureMpcWasm();
 
   const sessionA = new KeygenSession(
@@ -47,6 +55,7 @@ export async function createMpcWalletViaDkg(): Promise<{
   );
 
   let sessionId: string | null = null;
+  let shareABytes: Uint8Array | null = null;
 
   try {
     const msg1A = encodeWireMessages([sessionA.createFirstMessage()])[0]!;
@@ -76,16 +85,40 @@ export async function createMpcWalletViaDkg(): Promise<{
     sessionA.handleMessages(filterMessages(msg4ForA, MPC_PARTY.A));
 
     const shareA = sessionA.keyshare();
-    const shareABase64 = bytesToBase64(shareA.toBytes());
+    shareABytes = new Uint8Array(shareA.toBytes());
     shareA.free();
 
     const completed = await dkgComplete(sessionId);
-    storeShareATemporary(completed.wallet.id, shareABase64);
+    const wallet = completed.wallet;
+    const publicKeyHex = wallet.mpcPublicKey ?? "";
 
-  return {
-    wallet: completed.wallet,
-    shareABase64,
-  };
+    if (!publicKeyHex) {
+      throw new Error("지갑 public key가 없습니다.");
+    }
+
+    await saveBrowserShareA({
+      walletId: wallet.id,
+      address: wallet.address,
+      publicKeyHex,
+      shareABytes,
+    });
+    clearLegacySessionShareA(wallet.id);
+
+    const recoveryFile = await createRecoveryFile({
+      walletId: wallet.id,
+      address: wallet.address,
+      publicKeyHex,
+      shareABytes,
+      pin: params.recoveryPin,
+    });
+    downloadRecoveryFile(recoveryFile);
+
+    await reportWalletAuditEvent(wallet.id, {
+      eventType: "RECOVERY_FILE_CREATED",
+      data: { scheme: recoveryFile.scheme, version: recoveryFile.version },
+    }).catch(() => undefined);
+
+    return { wallet, recoveryFile };
   } catch (error) {
     if (sessionId) {
       await dkgAbort(sessionId).catch(() => undefined);
@@ -96,5 +129,10 @@ export async function createMpcWalletViaDkg(): Promise<{
       // session may already be consumed by keyshare()
     }
     throw error;
+  } finally {
+    // Best-effort wipe of ephemeral plaintext buffer.
+    if (shareABytes) {
+      shareABytes.fill(0);
+    }
   }
 }

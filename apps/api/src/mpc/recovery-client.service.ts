@@ -124,4 +124,25 @@ export class RecoveryClientService {
   }) {
     return this.request('PUT', '/shares', params);
   }
+
+  /** Decrypt Share C for emergency B+C signing only. Never log the response. */
+  exportShareC(walletId: string) {
+    return this.request<{
+      walletId: string;
+      userId: string;
+      partyId: number;
+      mpcPublicKey: string;
+      status: string;
+      shareCBase64: string;
+    }>('POST', `/shares/${walletId}/export`);
+  }
+
+  /** Wipe Share C after successful last withdraw. */
+  retireShareC(walletId: string) {
+    return this.request<{
+      walletId: string;
+      status: string;
+      retiredAt: string | null;
+    }>('POST', `/shares/${walletId}/retire`);
+  }
 }

@@ -11,6 +11,11 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { DkgOrchestratorService } from '../mpc/dkg-orchestrator.service';
 import { DkgMessagesDto, DkgRound2Dto, DkgStartDto } from './dto/dkg.dto';
+import { ClientAuditEventDto } from './dto/client-audit-event.dto';
+import { EmergencyLastWithdrawDto } from './dto/emergency-last-withdraw.dto';
+import { EmergencyStartDto } from './dto/emergency-recovery.dto';
+import { EmergencyLastWithdrawService } from './emergency-last-withdraw.service';
+import { EmergencyRecoveryService } from './emergency-recovery.service';
 import { WalletService } from './wallet.service';
 
 @Controller('wallets')
@@ -18,12 +23,21 @@ export class WalletController {
   constructor(
     private readonly walletService: WalletService,
     private readonly dkg: DkgOrchestratorService,
+    private readonly emergency: EmergencyRecoveryService,
+    private readonly lastWithdraw: EmergencyLastWithdrawService,
   ) {}
 
   @Get()
   @UseGuards(JwtAuthGuard)
   list(@Req() req: any) {
     return this.walletService.list(req.user.sub);
+  }
+
+  /** Retired wallet history (metadata only). Must be registered before :id routes. */
+  @Get('retired')
+  @UseGuards(JwtAuthGuard)
+  listRetired(@Req() req: any) {
+    return this.walletService.listRetired(req.user.sub);
   }
 
   @Get('summary')
@@ -84,6 +98,71 @@ export class WalletController {
   @UseGuards(JwtAuthGuard)
   dkgAbort(@Req() req: any, @Param('sessionId') sessionId: string) {
     return this.dkg.abort(req.user.sub, sessionId);
+  }
+
+  /**
+   * Google OTP gate for emergency recovery (Recovery File lost).
+   * Sets wallet to RECOVERY_PENDING. B+C last withdraw is a later step.
+   */
+  @Post(':id/emergency/start')
+  @UseGuards(JwtAuthGuard)
+  startEmergency(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: EmergencyStartDto,
+  ) {
+    return this.emergency.startEmergencyRecovery(req.user.sub, id, dto.otp);
+  }
+
+  /**
+   * B+C full-balance last withdraw after RECOVERY_PENDING.
+   * Retires the wallet on success.
+   */
+  @Post(':id/emergency/last-withdraw')
+  @UseGuards(JwtAuthGuard)
+  emergencyLastWithdraw(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: EmergencyLastWithdrawDto,
+  ) {
+    return this.lastWithdraw.executeLastWithdraw(
+      req.user.sub,
+      id,
+      dto.toAddress,
+      dto.otp,
+    );
+  }
+
+  /** Browser-reported audit (Recovery File / Share restore). No secrets allowed. */
+  @Post(':id/audit-events')
+  @UseGuards(JwtAuthGuard)
+  reportAuditEvent(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: ClientAuditEventDto,
+  ) {
+    return this.walletService.reportClientAuditEvent(
+      req.user.sub,
+      id,
+      dto.eventType,
+      dto.message,
+      dto.data,
+    );
+  }
+
+  @Get(':id/audits')
+  @UseGuards(JwtAuthGuard)
+  listAudits(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Query('take') take?: string,
+  ) {
+    const n = take ? Number(take) : 50;
+    return this.walletService.listAuditLogs(
+      req.user.sub,
+      id,
+      Number.isFinite(n) ? n : 50,
+    );
   }
 
   @Get(':id/balance')

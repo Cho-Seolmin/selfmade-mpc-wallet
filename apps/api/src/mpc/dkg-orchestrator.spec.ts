@@ -14,6 +14,7 @@ import { WalletStatus } from '@prisma/client';
 import { DkgOrchestratorService } from './dkg-orchestrator.service';
 import { RecoveryClientService } from './recovery-client.service';
 import { KeygenSession, Message } from './wasm';
+import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 config({ path: resolve(__dirname, '../../.env') });
@@ -32,7 +33,11 @@ describeE2E('DKG orchestrator (party A simulated in Node)', () => {
 
   beforeAll(async () => {
     await prisma.$connect();
-    orchestrator = new DkgOrchestratorService(prisma, recovery);
+    orchestrator = new DkgOrchestratorService(
+      prisma,
+      recovery,
+      new AuditService(prisma),
+    );
 
     const healthy = await fetch(
       `${process.env.RECOVERY_BASE_URL!.replace(/\/$/, '')}/health`,
