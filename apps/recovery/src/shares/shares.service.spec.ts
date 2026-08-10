@@ -31,7 +31,7 @@ describe('SharesService', () => {
     await prisma.$disconnect();
   });
 
-  it('stores encrypted Share C and exports only via dedicated endpoint', async () => {
+  it('stores encrypted Share C; plaintext only via in-process load (never HTTP export)', async () => {
     const shareBytes = randomBytes(96);
     const walletId = `wallet_${Date.now()}`;
 
@@ -52,8 +52,9 @@ describe('SharesService', () => {
     const safe = await service.getShareMeta(walletId);
     expect(safe.hasEncryptedShare).toBe(true);
 
-    const exported = await service.exportShareCForSigning(walletId);
-    expect(exported.shareCBase64).toBe(shareBytes.toString('base64'));
+    const loaded = await service.loadActiveShareCBytes(walletId);
+    expect(Buffer.compare(loaded, shareBytes)).toBe(0);
+    loaded.fill(0);
 
     await expect(
       service.upsertShareC({
@@ -68,7 +69,7 @@ describe('SharesService', () => {
     expect(retired.status).toBe('RETIRED');
     expect(retired.hasEncryptedShare).toBe(false);
 
-    await expect(service.exportShareCForSigning(walletId)).rejects.toThrow(
+    await expect(service.loadActiveShareCBytes(walletId)).rejects.toThrow(
       /not ACTIVE/,
     );
   });

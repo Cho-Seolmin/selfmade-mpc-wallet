@@ -125,16 +125,54 @@ export class RecoveryClientService {
     return this.request('PUT', '/shares', params);
   }
 
-  /** Decrypt Share C for emergency B+C signing only. Never log the response. */
-  exportShareC(walletId: string) {
+  /**
+   * Start party C SignSession on Recovery (Share C never exported).
+   */
+  signStart(params: { walletId: string; digestB64: string }) {
     return this.request<{
+      sessionId: string;
       walletId: string;
-      userId: string;
       partyId: number;
-      mpcPublicKey: string;
-      status: string;
-      shareCBase64: string;
-    }>('POST', `/shares/${walletId}/export`);
+      msg1C: WireMessage;
+    }>('POST', '/sign/sessions', params);
+  }
+
+  signRound1(sessionId: string, messages: WireMessage[]) {
+    return this.request<{ sessionId: string; messages: WireMessage[] }>(
+      'POST',
+      `/sign/sessions/${sessionId}/round1`,
+      { messages },
+    );
+  }
+
+  signRound2(sessionId: string, messages: WireMessage[]) {
+    return this.request<{ sessionId: string; messages: WireMessage[] }>(
+      'POST',
+      `/sign/sessions/${sessionId}/round2`,
+      { messages },
+    );
+  }
+
+  signRound3(sessionId: string, messages: WireMessage[]) {
+    return this.request<{ sessionId: string; ok: true }>(
+      'POST',
+      `/sign/sessions/${sessionId}/round3`,
+      { messages },
+    );
+  }
+
+  signLast(sessionId: string) {
+    return this.request<{ sessionId: string; messages: WireMessage[] }>(
+      'POST',
+      `/sign/sessions/${sessionId}/last`,
+    );
+  }
+
+  signAbort(sessionId: string) {
+    return this.request<{ ok: true }>(
+      'POST',
+      `/sign/sessions/${sessionId}/abort`,
+    ).catch(() => ({ ok: true as const }));
   }
 
   /** Wipe Share C after successful last withdraw. */

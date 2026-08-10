@@ -1,41 +1,35 @@
-import * as crypto from 'crypto';
 import * as speakeasy from 'speakeasy';
 
-function requireJwtSecret(): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    throw new Error('JWT_SECRET is required for account-bound OTP');
-  }
-  return secret;
+export const TOTP_ISSUER = 'Selfmade MPC Wallet';
+
+/** Random base32 secret for Google Authenticator. */
+export function generateTotpSecret(): string {
+  return speakeasy.generateSecret({ length: 20, name: TOTP_ISSUER }).base32;
 }
 
-/** Deterministic per-user TOTP secret derived from JWT_SECRET + userId. */
-export function getUserTotpSecret(userId: string): string {
-  return crypto
-    .createHmac('sha256', requireJwtSecret())
-    .update(`totp:v1:${userId}`)
-    .digest('hex')
-    .slice(0, 32);
-}
-
-export function verifyUserTotp(userId: string, token: string): boolean {
-  return speakeasy.totp.verify({
-    secret: getUserTotpSecret(userId),
-    encoding: 'hex',
-    token,
-    window: 1,
-  });
-}
-
-export function buildUserTotpAuthUrl(userId: string, email: string): string {
+export function buildTotpAuthUrl(secret: string, email: string): string {
   return speakeasy.otpauthURL({
-    secret: getUserTotpSecret(userId),
+    secret,
     label: email,
-    issuer: 'Custody Vault Demo',
-    encoding: 'hex',
+    issuer: TOTP_ISSUER,
+    encoding: 'base32',
   });
 }
 
-export function isOtpConfigured(): boolean {
-  return Boolean(process.env.JWT_SECRET);
+export function verifyTotpToken(secret: string, token: string): boolean {
+  return Boolean(
+    speakeasy.totp.verify({
+      secret,
+      encoding: 'base32',
+      token,
+      window: 1,
+    }),
+  );
+}
+
+export function currentTotpToken(secret: string): string {
+  return speakeasy.totp({
+    secret,
+    encoding: 'base32',
+  });
 }

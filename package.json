@@ -10,8 +10,9 @@
     "dev:api": "npm --workspace apps/api run start:dev",
     "dev:recovery": "npm --workspace apps/recovery run start:dev",
     "build:web": "npm --workspace apps/web run build",
-    "build:api": "npm --workspace apps/api run build",
+    "build:api": "npm --workspace packages/mpc-crypto run build && npm --workspace apps/api run build",
     "build:recovery": "npm --workspace apps/recovery run build",
+    "build:mpc-crypto": "npm --workspace packages/mpc-crypto run build",
     "test:api": "npm --workspace apps/api run test",
     "test:web": "npm --workspace apps/web run test",
     "test:integration": "npm --workspace apps/api run test:integration"

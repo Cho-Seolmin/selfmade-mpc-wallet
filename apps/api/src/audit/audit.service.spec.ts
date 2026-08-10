@@ -2,29 +2,33 @@ import { sanitizeAuditData, AuditService } from './audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditEventType } from './audit.constants';
 
-describe('sanitizeAuditData', () => {
-  it('strips sensitive keys and truncates long strings', () => {
+describe('sanitizeAuditData (allow-list)', () => {
+  it('keeps only allow-listed keys and truncates long strings', () => {
     const cleaned = sanitizeAuditData({
       toAddress: '0xabc',
+      address: '0x1',
       otp: '123456',
       recoveryPin: '999999',
       shareA: 'secret-bytes',
       encryptedShareB: 'cipher',
-      nested: { pin: '111111', ok: true },
       note: 'x'.repeat(600),
+      scheme: 'dkls23',
+      version: 1,
+      remainingAttempts: 2,
+      locked: false,
     }) as Record<string, unknown>;
 
-    expect(cleaned).toEqual(
-      expect.objectContaining({
-        toAddress: '0xabc',
-        nested: { ok: true },
-      }),
-    );
+    expect(cleaned).toEqual({
+      toAddress: '0xabc',
+      address: '0x1',
+      scheme: 'dkls23',
+      version: 1,
+      remainingAttempts: 2,
+      locked: false,
+    });
     expect(cleaned).not.toHaveProperty('otp');
-    expect(cleaned).not.toHaveProperty('recoveryPin');
+    expect(cleaned).not.toHaveProperty('note');
     expect(cleaned).not.toHaveProperty('shareA');
-    expect(cleaned).not.toHaveProperty('encryptedShareB');
-    expect(String(cleaned.note)).toContain('[truncated 600]');
   });
 });
 

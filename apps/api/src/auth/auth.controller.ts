@@ -17,7 +17,7 @@ import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { LoginThrottlerGuard } from './guards/login-throttler.guard';
 import { ChangePasswordDto } from './dto/change-password.dto';
-import { buildUserTotpAuthUrl, getUserTotpSecret } from './totp.util';
+import { TotpService } from './totp.service';
 import {
   ACCESS_COOKIE,
   getAccessCookieOptions,
@@ -26,7 +26,10 @@ import {
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly totp: TotpService,
+  ) {}
 
   @Post('register')
   async register(@Body() dto: RegisterDto) {
@@ -69,12 +72,7 @@ export class AuthController {
   getTotpSetup(@Req() req: any) {
     const userId = req.user.sub as string;
     const email = req.user.email as string;
-
-    return {
-      secret: getUserTotpSecret(userId),
-      otpauthUrl: buildUserTotpAuthUrl(userId, email),
-      hint: 'Google Authenticator 등에 아래 secret 또는 otpauth URL을 등록하세요.',
-    };
+    return this.totp.getOrCreateSetup(userId, email);
   }
 
   @Patch('password')

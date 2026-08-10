@@ -10,10 +10,12 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { DkgOrchestratorService } from '../mpc/dkg-orchestrator.service';
+import { SignOrchestratorService } from '../mpc/sign-orchestrator.service';
 import { DkgMessagesDto, DkgRound2Dto, DkgStartDto } from './dto/dkg.dto';
 import { ClientAuditEventDto } from './dto/client-audit-event.dto';
 import { EmergencyLastWithdrawDto } from './dto/emergency-last-withdraw.dto';
 import { EmergencyStartDto } from './dto/emergency-recovery.dto';
+import { SignMessagesDto, SignStartDto } from './dto/sign.dto';
 import { EmergencyLastWithdrawService } from './emergency-last-withdraw.service';
 import { EmergencyRecoveryService } from './emergency-recovery.service';
 import { WalletService } from './wallet.service';
@@ -23,6 +25,7 @@ export class WalletController {
   constructor(
     private readonly walletService: WalletService,
     private readonly dkg: DkgOrchestratorService,
+    private readonly sign: SignOrchestratorService,
     private readonly emergency: EmergencyRecoveryService,
     private readonly lastWithdraw: EmergencyLastWithdrawService,
   ) {}
@@ -100,6 +103,64 @@ export class WalletController {
     return this.dkg.abort(req.user.sub, sessionId);
   }
 
+  /** Start normal A+B threshold signing for a partial ETH withdraw. */
+  @Post('mpc/sign/start')
+  @UseGuards(JwtAuthGuard)
+  signStart(@Req() req: any, @Body() dto: SignStartDto) {
+    return this.sign.start(
+      req.user.sub,
+      dto.walletId,
+      dto.toAddress,
+      dto.amount,
+    );
+  }
+
+  @Post('mpc/sign/:sessionId/round1')
+  @UseGuards(JwtAuthGuard)
+  signRound1(
+    @Req() req: any,
+    @Param('sessionId') sessionId: string,
+    @Body() dto: SignMessagesDto,
+  ) {
+    return this.sign.round1(req.user.sub, sessionId, dto.messages);
+  }
+
+  @Post('mpc/sign/:sessionId/round2')
+  @UseGuards(JwtAuthGuard)
+  signRound2(
+    @Req() req: any,
+    @Param('sessionId') sessionId: string,
+    @Body() dto: SignMessagesDto,
+  ) {
+    return this.sign.round2(req.user.sub, sessionId, dto.messages);
+  }
+
+  @Post('mpc/sign/:sessionId/round3')
+  @UseGuards(JwtAuthGuard)
+  signRound3(
+    @Req() req: any,
+    @Param('sessionId') sessionId: string,
+    @Body() dto: SignMessagesDto,
+  ) {
+    return this.sign.round3(req.user.sub, sessionId, dto.messages);
+  }
+
+  @Post('mpc/sign/:sessionId/complete')
+  @UseGuards(JwtAuthGuard)
+  signComplete(
+    @Req() req: any,
+    @Param('sessionId') sessionId: string,
+    @Body() dto: SignMessagesDto,
+  ) {
+    return this.sign.complete(req.user.sub, sessionId, dto.messages);
+  }
+
+  @Post('mpc/sign/:sessionId/abort')
+  @UseGuards(JwtAuthGuard)
+  signAbort(@Req() req: any, @Param('sessionId') sessionId: string) {
+    return this.sign.abort(req.user.sub, sessionId);
+  }
+
   /**
    * Google OTP gate for emergency recovery (Recovery File lost).
    * Sets wallet to RECOVERY_PENDING. B+C last withdraw is a later step.
@@ -112,6 +173,16 @@ export class WalletController {
     @Body() dto: EmergencyStartDto,
   ) {
     return this.emergency.startEmergencyRecovery(req.user.sub, id, dto.otp);
+  }
+
+  /**
+   * Cancel accidental emergency/start: RECOVERY_PENDING → ACTIVE.
+   * Not available after RETIRING.
+   */
+  @Post(':id/emergency/cancel')
+  @UseGuards(JwtAuthGuard)
+  cancelEmergency(@Req() req: any, @Param('id') id: string) {
+    return this.emergency.cancelEmergencyRecovery(req.user.sub, id);
   }
 
   /**

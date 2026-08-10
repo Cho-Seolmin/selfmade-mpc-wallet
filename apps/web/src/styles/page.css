@@ -746,6 +746,62 @@
   word-break: break-all;
 }
 
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.pager__nav {
+  background: transparent;
+  border: none;
+  padding: 4px 2px;
+  font-size: 13px;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.pager__nav:disabled {
+  color: var(--color-text-muted);
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pager__pages {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.pager__page {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 13px;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.pager__page:hover:not(.pager__page--active) {
+  background: var(--color-gray-soft);
+}
+
+.pager__page--active {
+  color: var(--color-primary);
+  border-color: var(--color-border);
+  font-weight: 600;
+  cursor: default;
+}
+
 .empty-panel {
   border: 1px dashed var(--color-border);
   border-radius: 12px;

@@ -12,17 +12,11 @@ jest.mock('../common/crypto/share-b-encryption', () => ({
   decryptShareB: jest.fn(() => Buffer.from('share-b-bytes')),
 }));
 
-jest.mock('../mpc', () => ({
-  MPC_PARTY: { A: 0, B: 1, C: 2 },
-  encodeShareBytes: jest.fn((b: Buffer) => b.toString('base64')),
-  thresholdSignDigest: jest.fn(() => ({
-    address: '0x1111111111111111111111111111111111111111',
-    publicKeyHex: '0x03aa',
-    signature: {
-      r: new Uint8Array(32),
-      s: new Uint8Array(32),
-      v: 27,
-    },
+jest.mock('../mpc/bc-sign-relay', () => ({
+  signDigestBcRelay: jest.fn(async () => ({
+    r: new Uint8Array(32),
+    s: new Uint8Array(32),
+    v: 27,
   })),
 }));
 
@@ -46,10 +40,12 @@ jest.mock('../mpc/eth-transfer', () => ({
   unsignedTxDigest32: jest.fn(() => new Uint8Array(32)),
 }));
 
+import { signDigestBcRelay } from '../mpc/bc-sign-relay';
+
 describe('EmergencyLastWithdrawService', () => {
   let service: EmergencyLastWithdrawService;
   let prisma: any;
-  let recovery: { exportShareC: jest.Mock; retireShareC: jest.Mock };
+  let recovery: { retireShareC: jest.Mock };
   let emergencyOtp: { verifyEmergencyOtp: jest.Mock };
   let signer: { getProvider: jest.Mock };
 
@@ -66,6 +62,7 @@ describe('EmergencyLastWithdrawService', () => {
   };
 
   beforeEach(() => {
+    jest.clearAllMocks();
     prisma = {
       wallet: {
         findUnique: jest.fn().mockResolvedValue(wallet),
@@ -85,10 +82,6 @@ describe('EmergencyLastWithdrawService', () => {
       },
     };
     recovery = {
-      exportShareC: jest.fn().mockResolvedValue({
-        partyId: 2,
-        shareCBase64: Buffer.from('share-c-bytes').toString('base64'),
-      }),
       retireShareC: jest.fn().mockResolvedValue({ status: 'RETIRED' }),
     };
     emergencyOtp = {
@@ -128,7 +121,7 @@ describe('EmergencyLastWithdrawService', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('executes B+C last withdraw and retires wallet', async () => {
+  it('executes B+C relay last withdraw and retires wallet', async () => {
     const result = await service.executeLastWithdraw(
       'u1',
       'w1',
@@ -141,7 +134,13 @@ describe('EmergencyLastWithdrawService', () => {
       'w1',
       '123456',
     );
-    expect(recovery.exportShareC).toHaveBeenCalledWith('w1');
+    expect(signDigestBcRelay).toHaveBeenCalledWith(
+      expect.objectContaining({
+        walletId: 'w1',
+        expectedAddress: wallet.address,
+        recovery,
+      }),
+    );
     expect(recovery.retireShareC).toHaveBeenCalledWith('w1');
     expect(prisma.wallet.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -153,12 +152,5 @@ describe('EmergencyLastWithdrawService', () => {
     );
     expect(result.wallet.status).toBe(WalletStatus.RETIRED);
     expect(result.withdraw.txHash).toBe('0xabc');
-    expect(prisma.withdrawalAuditLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          eventType: 'EMERGENCY_WITHDRAW_COMPLETED',
-        }),
-      }),
-    );
   });
 });

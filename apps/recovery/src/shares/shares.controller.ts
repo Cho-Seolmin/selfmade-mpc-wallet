@@ -28,15 +28,6 @@ export class SharesController {
     return this.shares.getShareMeta(walletId);
   }
 
-  /**
-   * Export decrypted Share C for emergency B+C signing only.
-   * Protected by service token; never call from browser.
-   */
-  @Post(':walletId/export')
-  exportForSigning(@Param('walletId') walletId: string) {
-    return this.shares.exportShareCForSigning(walletId);
-  }
-
   /** Mark Share C retired and wipe ciphertext after last withdraw. */
   @Post(':walletId/retire')
   retire(@Param('walletId') walletId: string) {

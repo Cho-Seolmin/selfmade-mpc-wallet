@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SignerService } from '../wallet/signer.service';
 import { WithdrawGateway } from '../wallet/withdraw.gateway';
-import { isOtpConfigured } from '../auth/totp.util';
+import { isTotpEncryptionConfigured } from '../common/crypto/totp-encryption';
 
 @Injectable()
 export class SystemService {
@@ -74,7 +74,7 @@ export class SystemService {
       !!this.withdrawGateway.server &&
       typeof this.withdrawGateway.server.emit === 'function';
 
-    const otpConfigured = isOtpConfigured();
+    const otpConfigured = isTotpEncryptionConfigured();
 
     return {
       apiStatus: 'OK',

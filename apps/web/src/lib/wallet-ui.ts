@@ -69,6 +69,7 @@ export function formatAuditEvent(eventType: string): string {
     BROWSER_SHARE_RECOVERED: "Browser Share 복구",
     EMERGENCY_OTP_FAILED: "비상 OTP 실패",
     EMERGENCY_RECOVERY_STARTED: "비상 복구 시작",
+    EMERGENCY_RECOVERY_CANCELLED: "비상 복구 취소",
     EMERGENCY_WITHDRAW_REQUESTED: "비상 출금 요청",
     EMERGENCY_WITHDRAW_COMPLETED: "비상 출금 완료",
     EMERGENCY_WITHDRAW_FAILED: "비상 출금 실패",

@@ -1,16 +1,20 @@
 import { useEffect, useState } from "react";
+import { parseRecoveryFileJson } from "../lib/mpc/recovery-file";
 
 type Props = {
   open: boolean;
   busy: boolean;
   walletAddress: string;
   alreadyHasShareA: boolean;
+  /** Restore failure from parent (wrong file / PIN / wallet mismatch). */
+  error?: string;
   onCancel: () => void;
   onConfirm: (params: {
     recoveryFileJson: string;
     pin: string;
     overwrite: boolean;
   }) => void;
+  onDismissError?: () => void;
 };
 
 /**
@@ -22,8 +26,10 @@ export default function RestoreShareModal({
   busy,
   walletAddress,
   alreadyHasShareA,
+  error = "",
   onCancel,
   onConfirm,
+  onDismissError,
 }: Props) {
   const [pin, setPin] = useState("");
   const [fileName, setFileName] = useState("");
@@ -43,8 +49,15 @@ export default function RestoreShareModal({
 
   if (!open) return null;
 
-  const onFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const displayError = localError || error;
+
+  const clearErrors = () => {
     setLocalError("");
+    onDismissError?.();
+  };
+
+  const onFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    clearErrors();
     const file = e.target.files?.[0];
     if (!file) {
       setFileName("");
@@ -56,18 +69,22 @@ export default function RestoreShareModal({
       if (!text.trim()) {
         throw new Error("Recovery File이 비어 있습니다.");
       }
+      parseRecoveryFileJson(text);
       setFileName(file.name);
       setFileJson(text);
-    } catch (err: any) {
+    } catch (err: unknown) {
       setFileName("");
       setFileJson("");
-      setLocalError(err?.message || "파일을 읽을 수 없습니다.");
+      const msg =
+        err instanceof Error ? err.message : "파일을 읽을 수 없습니다.";
+      setLocalError(msg);
+      e.target.value = "";
     }
   };
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    setLocalError("");
+    clearErrors();
     if (!fileJson) {
       setLocalError("Recovery File을 선택하세요.");
       return;
@@ -78,6 +95,16 @@ export default function RestoreShareModal({
     }
     if (alreadyHasShareA && !overwrite) {
       setLocalError("기존 Share A를 덮어쓰려면 확인에 체크하세요.");
+      return;
+    }
+    try {
+      parseRecoveryFileJson(fileJson);
+    } catch (err: unknown) {
+      setLocalError(
+        err instanceof Error
+          ? err.message
+          : "유효하지 않은 Recovery File입니다.",
+      );
       return;
     }
     onConfirm({
@@ -176,9 +203,10 @@ export default function RestoreShareModal({
             maxLength={6}
             value={pin}
             disabled={busy}
-            onChange={(e) =>
-              setPin(e.target.value.replace(/\D/g, "").slice(0, 6))
-            }
+            onChange={(e) => {
+              clearErrors();
+              setPin(e.target.value.replace(/\D/g, "").slice(0, 6));
+            }}
           />
         </div>
 
@@ -202,7 +230,11 @@ export default function RestoreShareModal({
           </label>
         )}
 
-        {localError && <div className="alert alert--danger">{localError}</div>}
+        {displayError && (
+          <div className="alert alert--danger" role="alert">
+            {displayError}
+          </div>
+        )}
 
         <div className="page__actions" style={{ marginTop: "4px" }}>
           <button

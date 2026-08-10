@@ -7,5 +7,6 @@ import { SharesService } from './shares.service';
   imports: [PrismaModule],
   controllers: [SharesController],
   providers: [SharesService],
+  exports: [SharesService],
 })
 export class SharesModule {}

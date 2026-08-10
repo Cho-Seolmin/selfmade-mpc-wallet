@@ -11,11 +11,7 @@ import { AuditEventType } from '../audit/audit.constants';
 import { AuditService } from '../audit/audit.service';
 import { decryptShareB } from '../common/crypto/share-b-encryption';
 import { MpcErrorCode } from '../common/errors/mpc-error-codes';
-import {
-  encodeShareBytes,
-  MPC_PARTY,
-  thresholdSignDigest,
-} from '../mpc';
+import { signDigestBcRelay } from '../mpc/bc-sign-relay';
 import {
   prepareFullBalanceTransfer,
   serializeSignedTransfer,
@@ -40,9 +36,8 @@ export class EmergencyLastWithdrawService {
   ) {}
 
   /**
-   * Emergency last withdraw: B+C threshold sign → broadcast full balance → RETIRED.
-   * Requires RECOVERY_PENDING (or RETIRING retry) + fresh OTP.
-   * Never uses Share A. Never logs share material.
+   * Emergency last withdraw: B+C threshold sign (wire relay) → broadcast → RETIRED.
+   * Share C never leaves Recovery. Share A unused. Never logs share material.
    */
   async executeLastWithdraw(
     userId: string,
@@ -119,24 +114,14 @@ export class EmergencyLastWithdrawService {
       walletId: wallet.id,
       userId,
       eventType: AuditEventType.EMERGENCY_WITHDRAW_REQUESTED,
-      message: 'Emergency B+C last withdraw started',
-      data: { toAddress },
+      message: 'Emergency B+C last withdraw started (share-C stays on Recovery)',
+      data: { toAddress, mode: 'BC_WIRE_RELAY' },
     });
 
     let shareBBytes: Buffer | null = null;
-    let shareCBytes: Buffer | null = null;
 
     try {
       shareBBytes = decryptShareB(wallet.encryptedShareB);
-      const exported = await this.recovery.exportShareC(wallet.id);
-      shareCBytes = Buffer.from(exported.shareCBase64, 'base64');
-
-      if (exported.partyId !== MPC_PARTY.C) {
-        throw new BadRequestException({
-          message: 'Recovery Share C partyId가 올바르지 않습니다.',
-          code: MpcErrorCode.EMERGENCY_WITHDRAW_FAILED,
-        });
-      }
 
       const provider = this.signer.getProvider();
       let txHash: string | null = null;
@@ -155,19 +140,15 @@ export class EmergencyLastWithdrawService {
         balanceWei = prepared.balanceWei;
 
         const digest = unsignedTxDigest32(prepared.tx);
-        const signed = thresholdSignDigest(
-          [
-            { shareB64: encodeShareBytes(shareBBytes) },
-            { shareB64: encodeShareBytes(shareCBytes) },
-          ],
-          digest,
-        );
+        const signature = await signDigestBcRelay({
+          shareBBytes: new Uint8Array(shareBBytes),
+          digest32: digest,
+          walletId: wallet.id,
+          expectedAddress: wallet.address,
+          recovery: this.recovery,
+        });
 
-        if (getAddress(signed.address) !== getAddress(wallet.address)) {
-          throw new Error('MPC signature address mismatch');
-        }
-
-        const raw = serializeSignedTransfer(prepared.tx, signed.signature);
+        const raw = serializeSignedTransfer(prepared.tx, signature);
         const response = await provider.broadcastTransaction(raw);
         txHash = response.hash;
         await response.wait(1);
@@ -194,7 +175,7 @@ export class EmergencyLastWithdrawService {
           confirmedAt: txHash ? now : undefined,
           finalizedAt: now,
           metadata: {
-            mode: 'EMERGENCY_BC',
+            mode: 'EMERGENCY_BC_RELAY',
             balanceWei: balanceWei.toString(),
             feeWei: feeWei.toString(),
             zeroBalance: txHash === null,
@@ -277,14 +258,12 @@ export class EmergencyLastWithdrawService {
         data: { error: String(message).slice(0, 300) },
       });
 
-      // Keep RETIRING so the user can retry after fixing transient issues.
       throw new BadRequestException({
         message: `비상 전액 출금에 실패했습니다: ${String(message).slice(0, 200)}`,
         code: MpcErrorCode.EMERGENCY_WITHDRAW_FAILED,
       });
     } finally {
       if (shareBBytes) shareBBytes.fill(0);
-      if (shareCBytes) shareCBytes.fill(0);
     }
   }
 }

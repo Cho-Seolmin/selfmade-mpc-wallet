@@ -113,9 +113,79 @@ export async function dkgAbort(sessionId: string) {
   return res.data;
 }
 
+/** Start normal A+B threshold signing (partial ETH withdraw). */
+export async function signStart(params: {
+  walletId: string;
+  toAddress: string;
+  amount: string;
+}) {
+  const res = await api.post("/wallets/mpc/sign/start", params);
+  return res.data as {
+    sessionId: string;
+    walletId: string;
+    digestB64: string;
+    msg1B: WireMessage;
+    amountWei: string;
+    feeWei: string;
+    toAddress: string;
+    fromAddress: string;
+  };
+}
+
+export async function signRound1(sessionId: string, messages: WireMessage[]) {
+  const res = await api.post(`/wallets/mpc/sign/${sessionId}/round1`, {
+    messages,
+  });
+  return res.data as { sessionId: string; messagesForA: WireMessage[] };
+}
+
+export async function signRound2(sessionId: string, messages: WireMessage[]) {
+  const res = await api.post(`/wallets/mpc/sign/${sessionId}/round2`, {
+    messages,
+  });
+  return res.data as { sessionId: string; messagesForA: WireMessage[] };
+}
+
+export async function signRound3(sessionId: string, messages: WireMessage[]) {
+  const res = await api.post(`/wallets/mpc/sign/${sessionId}/round3`, {
+    messages,
+  });
+  return res.data as { sessionId: string; ok: true };
+}
+
+export async function signComplete(sessionId: string, messages: WireMessage[]) {
+  const res = await api.post(`/wallets/mpc/sign/${sessionId}/complete`, {
+    messages,
+  });
+  return res.data as {
+    withdraw: {
+      id: string;
+      amount: string;
+      toAddress: string;
+      status: string;
+      txHash: string | null;
+    };
+    message: string;
+  };
+}
+
+export async function signAbort(sessionId: string) {
+  const res = await api.post(`/wallets/mpc/sign/${sessionId}/abort`);
+  return res.data;
+}
+
 /** Google OTP gate → wallet status RECOVERY_PENDING (B+C withdraw comes later). */
 export async function startEmergencyRecovery(walletId: string, otp: string) {
   const res = await api.post(`/wallets/${walletId}/emergency/start`, { otp });
+  return res.data as {
+    wallet: Wallet;
+    message: string;
+  };
+}
+
+/** Undo emergency/start: RECOVERY_PENDING → ACTIVE. */
+export async function cancelEmergencyRecovery(walletId: string) {
+  const res = await api.post(`/wallets/${walletId}/emergency/cancel`);
   return res.data as {
     wallet: Wallet;
     message: string;

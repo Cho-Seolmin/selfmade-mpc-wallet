@@ -80,26 +80,15 @@ export class SharesService {
   }
 
   /**
-   * Decrypt Share C for emergency B+C signing (internal Main API only).
-   * Response must never be logged.
+   * Decrypt Share C for in-process SignSession only (Recovery memory).
+   * Never return over HTTP. Caller must wipe the buffer.
    */
-  async exportShareCForSigning(walletId: string) {
+  async loadActiveShareCBytes(walletId: string): Promise<Buffer> {
     const row = await this.requireShare(walletId);
     if (row.status !== STATUS_ACTIVE) {
       throw new ConflictException('Share C is not ACTIVE');
     }
-
-    const shareBytes = decryptShareC(row.encryptedShareC);
-
-    return {
-      walletId: row.walletId,
-      userId: row.userId,
-      partyId: row.partyId,
-      mpcPublicKey: row.mpcPublicKey,
-      status: row.status,
-      /** Base64 Share C plaintext — TLS + service token only. */
-      shareCBase64: shareBytes.toString('base64'),
-    };
+    return decryptShareC(row.encryptedShareC);
   }
 
   async retireShare(walletId: string) {

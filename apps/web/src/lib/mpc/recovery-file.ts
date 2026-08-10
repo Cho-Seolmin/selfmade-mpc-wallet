@@ -91,7 +91,9 @@ export function parseRecoveryFileJson(raw: string): MpcRecoveryFile {
     !file.cipher?.ivB64 ||
     !file.cipher?.ciphertextB64
   ) {
-    throw new Error("유효하지 않은 Recovery File 형식입니다.");
+    throw new Error(
+      "유효하지 않은 Recovery File입니다. MPC Recovery JSON 파일을 선택했는지 확인하세요.",
+    );
   }
 
   // Defense: reject accidental plaintext share fields if ever present.
@@ -120,7 +122,9 @@ export async function decryptShareAFromRecoveryFile(
       base64ToBytes(file.cipher.ciphertextB64),
     );
   } catch {
-    throw new Error("Recovery PIN이 올바르지 않거나 파일이 손상되었습니다.");
+    throw new Error(
+      "Recovery PIN이 올바르지 않습니다. 지갑 생성 시 설정한 6자리 PIN을 다시 입력하세요.",
+    );
   }
 }
 

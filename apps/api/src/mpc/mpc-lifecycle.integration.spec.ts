@@ -1,6 +1,5 @@
 import { config } from 'dotenv';
 import { resolve } from 'path';
-import * as speakeasy from 'speakeasy';
 import {
   MPC_PARTIES,
   MPC_PARTY,
@@ -12,7 +11,7 @@ import {
   filterMessages,
 } from '@selfmade/mpc-crypto';
 import { WalletStatus } from '@prisma/client';
-import { getUserTotpSecret } from '../auth/totp.util';
+import { TotpService } from '../auth/totp.service';
 import { AuditService } from '../audit/audit.service';
 import { AuditEventType } from '../audit/audit.constants';
 import { PrismaService } from '../prisma/prisma.service';
@@ -125,17 +124,15 @@ async function runPartyADkg(
   }
 }
 
-function currentOtp(userId: string): string {
-  return speakeasy.totp({
-    secret: getUserTotpSecret(userId),
-    encoding: 'hex',
-  });
+function currentOtp(userId: string, totp: TotpService): Promise<string> {
+  return totp.currentOtp(userId);
 }
 
 describeIntegration('MPC lifecycle integration (STEP 12)', () => {
   const prisma = new PrismaService();
   const recovery = new RecoveryClientService();
   const audit = new AuditService(prisma);
+  const totp = new TotpService(prisma);
   let orchestrator: DkgOrchestratorService;
   let emergency: EmergencyRecoveryService;
   let lastWithdraw: EmergencyLastWithdrawService;
@@ -152,7 +149,7 @@ describeIntegration('MPC lifecycle integration (STEP 12)', () => {
 
     await prisma.$connect();
     orchestrator = new DkgOrchestratorService(prisma, recovery, audit);
-    emergency = new EmergencyRecoveryService(prisma, audit);
+    emergency = new EmergencyRecoveryService(prisma, audit, totp);
     const signer = new SignerService();
     lastWithdraw = new EmergencyLastWithdrawService(
       prisma,
@@ -171,6 +168,7 @@ describeIntegration('MPC lifecycle integration (STEP 12)', () => {
       },
     });
     userId = user.id;
+    await totp.getOrCreateSetup(userId, user.email);
   }, 30_000);
 
   afterAll(async () => {
@@ -211,7 +209,7 @@ describeIntegration('MPC lifecycle integration (STEP 12)', () => {
       ).rejects.toThrow();
 
       // 3) OTP → RECOVERY_PENDING
-      const otp1 = currentOtp(userId);
+      const otp1 = await currentOtp(userId, totp);
       const started = await emergency.startEmergencyRecovery(
         userId,
         first.walletId,
@@ -222,7 +220,7 @@ describeIntegration('MPC lifecycle integration (STEP 12)', () => {
       // 4) B+C last withdraw (zero-balance path retires without broadcast)
       const dest = '0x2222222222222222222222222222222222222222';
       // Fresh OTP window — regenerate in case step 3 crossed a tick.
-      const otp2 = currentOtp(userId);
+      const otp2 = await currentOtp(userId, totp);
       const retired = await lastWithdraw.executeLastWithdraw(
         userId,
         first.walletId,

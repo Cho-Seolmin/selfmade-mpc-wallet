@@ -290,7 +290,7 @@ export default function SettingsPage() {
               <div className="settings-row__text">
                 <div className="settings-row__label">비상 복구 OTP</div>
                 <div className="settings-row__desc">
-                  계정마다 JWT에서 파생된 고유 TOTP secret을 사용합니다.
+                  계정마다 랜덤 TOTP secret을 발급하고, 서버에는 TOTP_ENCRYPTION_KEY로 암호화해 저장합니다.
                 </div>
               </div>
               <Switch checked={Boolean(totpSetup)} onChange={() => {}} disabled />

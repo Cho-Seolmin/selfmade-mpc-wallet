@@ -2,7 +2,11 @@
 
 export const MPC_PARTIES = 3;
 export const MPC_THRESHOLD = 2;
+export const MPC_PARTY_B = 1;
 export const MPC_PARTY_C = 2;
+/** BIP32 chain path used by Silence Laboratories SignSession. */
+export const MPC_CHAIN_PATH = 'm';
+
 
 export type WireMessage = {
   from: number;

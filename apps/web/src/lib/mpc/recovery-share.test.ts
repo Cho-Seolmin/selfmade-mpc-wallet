@@ -99,7 +99,7 @@ describe("browser Share A + Recovery File", () => {
           mpcPublicKey: publicKeyHex,
         },
       }),
-    ).rejects.toThrow(/walletId/);
+    ).rejects.toThrow(/현재 로그인한 지갑용 파일이 아닙니다/);
 
     const restored = await restoreBrowserShareA({
       recoveryFileJson: JSON.stringify(file),

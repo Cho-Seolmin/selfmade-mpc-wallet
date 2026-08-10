@@ -51,7 +51,7 @@ export async function restoreBrowserShareA(
 
   if (file.walletId !== params.expectedWallet.id) {
     throw new Error(
-      "Recovery File의 walletId가 현재 지갑과 일치하지 않습니다.",
+      "이 Recovery File은 현재 로그인한 지갑용 파일이 아닙니다. 올바른 파일을 선택하세요.",
     );
   }
 
@@ -59,7 +59,7 @@ export async function restoreBrowserShareA(
   const walletAddress = normalizeAddress(params.expectedWallet.address);
   if (fileAddress !== walletAddress) {
     throw new Error(
-      "Recovery File의 address가 현재 지갑과 일치하지 않습니다.",
+      "Recovery File의 지갑 주소가 현재 지갑과 다릅니다. 다른 계정의 파일일 수 있습니다.",
     );
   }
 
@@ -68,7 +68,7 @@ export async function restoreBrowserShareA(
     const filePk = file.publicKeyHex.toLowerCase();
     if (expectedPk !== filePk) {
       throw new Error(
-        "Recovery File의 public key가 현재 지갑과 일치하지 않습니다.",
+        "Recovery File의 공개키가 현재 지갑과 일치하지 않습니다.",
       );
     }
   }

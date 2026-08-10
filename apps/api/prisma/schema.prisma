@@ -80,6 +80,8 @@ model User {
   passwordHash String
   role         UserRole   @default(USER)
   status       UserStatus @default(PENDING)
+  /// AES-256-GCM encrypted TOTP secret (base32). Key: TOTP_ENCRYPTION_KEY.
+  encryptedTotpSecret String?
   createdAt    DateTime   @default(now())
 
   wallets    Wallet[]

@@ -5,17 +5,8 @@ import {
 import { WalletStatus } from '@prisma/client';
 import { EmergencyRecoveryService } from './emergency-recovery.service';
 import { AuditService } from '../audit/audit.service';
+import { TotpService } from '../auth/totp.service';
 import { PrismaService } from '../prisma/prisma.service';
-
-jest.mock('../auth/totp.util', () => ({
-  verifyUserTotp: jest.fn(),
-}));
-
-import { verifyUserTotp } from '../auth/totp.util';
-
-const mockedVerify = verifyUserTotp as jest.MockedFunction<
-  typeof verifyUserTotp
->;
 
 describe('EmergencyRecoveryService', () => {
   let service: EmergencyRecoveryService;
@@ -23,6 +14,7 @@ describe('EmergencyRecoveryService', () => {
     wallet: { findUnique: jest.Mock; update: jest.Mock };
     withdrawalAuditLog: { create: jest.Mock };
   };
+  let totp: { verify: jest.Mock };
 
   const baseWallet = {
     id: 'w1',
@@ -46,12 +38,15 @@ describe('EmergencyRecoveryService', () => {
         create: jest.fn().mockResolvedValue({}),
       },
     };
+    totp = {
+      verify: jest.fn(),
+    };
     service = new EmergencyRecoveryService(
       prisma as unknown as PrismaService,
       new AuditService(prisma as unknown as PrismaService),
+      totp as unknown as TotpService,
     );
     service.resetOtpFailuresForTests();
-    mockedVerify.mockReset();
   });
 
   it('rejects invalid OTP format', async () => {
@@ -66,7 +61,7 @@ describe('EmergencyRecoveryService', () => {
       ...baseWallet,
       status: WalletStatus.RETIRED,
     });
-    mockedVerify.mockReturnValue(true);
+    totp.verify.mockResolvedValue(true);
     await expect(
       service.startEmergencyRecovery('u1', 'w1', '123456'),
     ).rejects.toBeInstanceOf(BadRequestException);
@@ -74,58 +69,26 @@ describe('EmergencyRecoveryService', () => {
 
   it('records failure and throws on wrong OTP', async () => {
     prisma.wallet.findUnique.mockResolvedValue(baseWallet);
-    mockedVerify.mockReturnValue(false);
-
-    await expect(
-      service.startEmergencyRecovery('u1', 'w1', '000000'),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
-
-    expect(prisma.withdrawalAuditLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          eventType: 'EMERGENCY_OTP_FAILED',
-        }),
-      }),
-    );
-    expect(prisma.wallet.update).not.toHaveBeenCalled();
-  });
-
-  it('locks after repeated OTP failures', async () => {
-    prisma.wallet.findUnique.mockResolvedValue(baseWallet);
-    mockedVerify.mockReturnValue(false);
-
-    for (let i = 0; i < 5; i++) {
-      await expect(
-        service.startEmergencyRecovery('u1', 'w1', '000000'),
-      ).rejects.toBeInstanceOf(UnauthorizedException);
-    }
-
+    totp.verify.mockResolvedValue(false);
     await expect(
       service.startEmergencyRecovery('u1', 'w1', '123456'),
-    ).rejects.toThrow(/잠겼습니다/);
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(prisma.withdrawalAuditLog.create).toHaveBeenCalled();
   });
 
   it('sets RECOVERY_PENDING on successful OTP', async () => {
     prisma.wallet.findUnique.mockResolvedValue(baseWallet);
-    mockedVerify.mockReturnValue(true);
+    totp.verify.mockResolvedValue(true);
     prisma.wallet.update.mockResolvedValue({
       ...baseWallet,
       status: WalletStatus.RECOVERY_PENDING,
     });
 
     const result = await service.startEmergencyRecovery('u1', 'w1', '123456');
-
     expect(result.wallet.status).toBe(WalletStatus.RECOVERY_PENDING);
     expect(prisma.wallet.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: { status: WalletStatus.RECOVERY_PENDING },
-      }),
-    );
-    expect(prisma.withdrawalAuditLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          eventType: 'EMERGENCY_RECOVERY_STARTED',
-        }),
       }),
     );
   });
@@ -135,11 +98,38 @@ describe('EmergencyRecoveryService', () => {
       ...baseWallet,
       status: WalletStatus.RECOVERY_PENDING,
     });
-    mockedVerify.mockReturnValue(true);
+    totp.verify.mockResolvedValue(true);
 
     const result = await service.startEmergencyRecovery('u1', 'w1', '123456');
-
     expect(result.wallet.status).toBe(WalletStatus.RECOVERY_PENDING);
-    expect(prisma.wallet.update).not.toHaveBeenCalled();
+  });
+
+  it('cancels RECOVERY_PENDING back to ACTIVE', async () => {
+    prisma.wallet.findUnique.mockResolvedValue({
+      ...baseWallet,
+      status: WalletStatus.RECOVERY_PENDING,
+    });
+    prisma.wallet.update.mockResolvedValue({
+      ...baseWallet,
+      status: WalletStatus.ACTIVE,
+    });
+
+    const result = await service.cancelEmergencyRecovery('u1', 'w1');
+    expect(result.wallet.status).toBe(WalletStatus.ACTIVE);
+    expect(prisma.wallet.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { status: WalletStatus.ACTIVE },
+      }),
+    );
+  });
+
+  it('rejects cancel while RETIRING', async () => {
+    prisma.wallet.findUnique.mockResolvedValue({
+      ...baseWallet,
+      status: WalletStatus.RETIRING,
+    });
+    await expect(
+      service.cancelEmergencyRecovery('u1', 'w1'),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 });

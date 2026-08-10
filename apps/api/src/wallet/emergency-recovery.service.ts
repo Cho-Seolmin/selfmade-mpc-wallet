@@ -8,7 +8,7 @@ import {
 import { WalletStatus } from '@prisma/client';
 import { AuditEventType } from '../audit/audit.constants';
 import { AuditService } from '../audit/audit.service';
-import { verifyUserTotp } from '../auth/totp.util';
+import { TotpService } from '../auth/totp.service';
 import { MpcErrorCode } from '../common/errors/mpc-error-codes';
 import { PrismaService } from '../prisma/prisma.service';
 import { OtpFailureTracker } from './otp-failure-tracker';
@@ -22,6 +22,7 @@ export class EmergencyRecoveryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly totp: TotpService,
   ) {}
 
   /**
@@ -54,7 +55,7 @@ export class EmergencyRecoveryService {
       throw err;
     }
 
-    const ok = verifyUserTotp(userId, otp);
+    const ok = await this.totp.verify(userId, otp);
     if (!ok) {
       const result = this.otpFailures.recordFailure(userId);
       await this.audit.write({
@@ -177,6 +178,110 @@ export class EmergencyRecoveryService {
       },
       message:
         'OTP 인증에 성공했습니다. 지갑이 RECOVERY_PENDING 상태입니다. 다음 단계에서 B+C 전액 출금(마지막 출금)을 진행합니다.',
+    };
+  }
+
+  /**
+   * Undo accidental emergency/start: RECOVERY_PENDING → ACTIVE.
+   * Not allowed once RETIRING (last withdraw in progress).
+   */
+  async cancelEmergencyRecovery(userId: string, walletId: string) {
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+      select: {
+        id: true,
+        userId: true,
+        walletType: true,
+        status: true,
+        address: true,
+        mpcPublicKey: true,
+        createdAt: true,
+        retiredAt: true,
+      },
+    });
+
+    if (!wallet || wallet.walletType !== 'MPC') {
+      throw new NotFoundException({
+        message: 'Wallet not found',
+        code: MpcErrorCode.WALLET_NOT_FOUND,
+      });
+    }
+    if (wallet.userId !== userId) {
+      throw new ForbiddenException('Not your wallet');
+    }
+    assertWalletNotRetired(wallet.status, '비상 복구 취소');
+
+    if (wallet.status === WalletStatus.ACTIVE) {
+      return {
+        wallet: {
+          id: wallet.id,
+          walletType: wallet.walletType,
+          status: wallet.status,
+          address: wallet.address,
+          mpcPublicKey: wallet.mpcPublicKey,
+          createdAt: wallet.createdAt,
+          retiredAt: wallet.retiredAt,
+          resolvedAddress: wallet.address,
+          addressSource: 'WALLET_ROW' as const,
+        },
+        message: '이미 ACTIVE 상태입니다.',
+      };
+    }
+
+    if (wallet.status === WalletStatus.RETIRING) {
+      throw new BadRequestException({
+        message:
+          '비상 출금이 진행 중(RETIRING)이라 취소할 수 없습니다. 전액 출금을 완료하거나 재시도하세요.',
+        code: MpcErrorCode.EMERGENCY_STATE_INVALID,
+      });
+    }
+
+    if (wallet.status !== WalletStatus.RECOVERY_PENDING) {
+      throw new BadRequestException({
+        message: '비상 복구 취소는 RECOVERY_PENDING 상태에서만 가능합니다.',
+        code: MpcErrorCode.EMERGENCY_STATE_INVALID,
+      });
+    }
+
+    const updated = await this.prisma.wallet.update({
+      where: { id: wallet.id },
+      data: { status: WalletStatus.ACTIVE },
+      select: {
+        id: true,
+        walletType: true,
+        status: true,
+        address: true,
+        mpcPublicKey: true,
+        createdAt: true,
+        retiredAt: true,
+      },
+    });
+
+    await this.audit.write({
+      walletId: wallet.id,
+      userId,
+      eventType: AuditEventType.EMERGENCY_RECOVERY_CANCELLED,
+      message: 'Emergency recovery cancelled; wallet returned to ACTIVE',
+      data: {
+        previousStatus: WalletStatus.RECOVERY_PENDING,
+        nextStatus: WalletStatus.ACTIVE,
+      },
+    });
+
+    return {
+      wallet: {
+        id: updated.id,
+        walletType: updated.walletType,
+        status: updated.status,
+        address: updated.address,
+        mpcPublicKey: updated.mpcPublicKey,
+        createdAt: updated.createdAt,
+        retiredAt: updated.retiredAt,
+        resolvedAddress: updated.address,
+        addressSource: 'WALLET_ROW' as const,
+      },
+      message:
+        '비상 복구를 취소했습니다. 지갑이 다시 ACTIVE입니다. 일반 출금(A+B)을 사용할 수 있습니다.',
     };
   }
 

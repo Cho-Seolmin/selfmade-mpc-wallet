@@ -6,6 +6,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
 import { LoginThrottlerGuard } from './guards/login-throttler.guard';
+import { TotpService } from './totp.service';
 import type { StringValue } from 'ms';
 
 const expiresIn = (process.env.JWT_EXPIRES_IN ?? '7d') as StringValue;
@@ -20,7 +21,7 @@ const expiresIn = (process.env.JWT_EXPIRES_IN ?? '7d') as StringValue;
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, LoginThrottlerGuard],
-  exports: [AuthService, JwtModule],
+  providers: [AuthService, JwtStrategy, LoginThrottlerGuard, TotpService],
+  exports: [AuthService, JwtModule, TotpService],
 })
 export class AuthModule {}
