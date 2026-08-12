@@ -20,7 +20,7 @@ import {
 import { RecoveryClientService } from '../mpc/recovery-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmergencyRecoveryService } from './emergency-recovery.service';
-import { SignerService } from './signer.service';
+import { RpcProviderService } from './rpc-provider.service';
 import { assertWalletNotRetired } from './wallet-lifecycle';
 
 @Injectable()
@@ -29,7 +29,7 @@ export class EmergencyLastWithdrawService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly signer: SignerService,
+    private readonly rpc: RpcProviderService,
     private readonly recovery: RecoveryClientService,
     private readonly emergencyOtp: EmergencyRecoveryService,
     private readonly audit: AuditService,
@@ -123,7 +123,7 @@ export class EmergencyLastWithdrawService {
     try {
       shareBBytes = decryptShareB(wallet.encryptedShareB);
 
-      const provider = this.signer.getProvider();
+      const provider = this.rpc.getProvider();
       let txHash: string | null = null;
       let valueWei = 0n;
       let feeWei = 0n;

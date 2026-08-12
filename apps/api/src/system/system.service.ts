@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { SignerService } from '../wallet/signer.service';
+import { RpcProviderService } from '../wallet/rpc-provider.service';
 import { WithdrawGateway } from '../wallet/withdraw.gateway';
 import { isTotpEncryptionConfigured } from '../common/crypto/totp-encryption';
 
@@ -10,7 +10,7 @@ export class SystemService {
 
   constructor(
     private prisma: PrismaService,
-    private signerService: SignerService,
+    private rpcProvider: RpcProviderService,
     private withdrawGateway: WithdrawGateway,
   ) {}
 
@@ -27,16 +27,11 @@ export class SystemService {
       where: { status: 'DEAD' },
     });
 
-    const signerAddress = await this.signerService.getSignerAddress();
-    const signerBalance = await this.signerService.getSignerBalance();
-
     return {
       queuePending,
       queueRunning,
       queueDead,
       workerActive: false,
-      signerAddress,
-      signerBalanceWei: signerBalance.toString(),
     };
   }
 
@@ -62,7 +57,7 @@ export class SystemService {
     let sepoliaRpcConnected = false;
     try {
       await this.withTimeout(
-        this.signerService.getProvider().getBlockNumber(),
+        this.rpcProvider.getProvider().getBlockNumber(),
         3000,
       );
       sepoliaRpcConnected = true;

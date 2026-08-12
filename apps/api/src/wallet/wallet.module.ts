@@ -8,7 +8,7 @@ import { EmergencyLastWithdrawService } from './emergency-last-withdraw.service'
 import { EmergencyRecoveryService } from './emergency-recovery.service';
 import { WalletController } from './wallet.controller';
 import { WalletService } from './wallet.service';
-import { SignerService } from './signer.service';
+import { RpcProviderService } from './rpc-provider.service';
 import { WithdrawGateway } from './withdraw.gateway';
 
 @Module({
@@ -16,7 +16,7 @@ import { WithdrawGateway } from './withdraw.gateway';
   controllers: [WalletController],
   providers: [
     WalletService,
-    SignerService,
+    RpcProviderService,
     WithdrawGateway,
     RecoveryClientService,
     DkgOrchestratorService,
@@ -24,6 +24,6 @@ import { WithdrawGateway } from './withdraw.gateway';
     EmergencyRecoveryService,
     EmergencyLastWithdrawService,
   ],
-  exports: [SignerService, WithdrawGateway],
+  exports: [RpcProviderService, WithdrawGateway],
 })
 export class WalletModule {}

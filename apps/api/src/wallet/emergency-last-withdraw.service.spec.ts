@@ -6,7 +6,7 @@ import { EmergencyRecoveryService } from './emergency-recovery.service';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RecoveryClientService } from '../mpc/recovery-client.service';
-import { SignerService } from './signer.service';
+import { RpcProviderService } from './rpc-provider.service';
 
 jest.mock('../common/crypto/share-b-encryption', () => ({
   decryptShareB: jest.fn(() => Buffer.from('share-b-bytes')),
@@ -47,7 +47,7 @@ describe('EmergencyLastWithdrawService', () => {
   let prisma: any;
   let recovery: { retireShareC: jest.Mock };
   let emergencyOtp: { verifyEmergencyOtp: jest.Mock };
-  let signer: { getProvider: jest.Mock };
+  let rpc: { getProvider: jest.Mock };
 
   const wallet = {
     id: 'w1',
@@ -87,7 +87,7 @@ describe('EmergencyLastWithdrawService', () => {
     emergencyOtp = {
       verifyEmergencyOtp: jest.fn().mockResolvedValue(undefined),
     };
-    signer = {
+    rpc = {
       getProvider: jest.fn().mockReturnValue({
         broadcastTransaction: jest.fn().mockResolvedValue({
           hash: '0xabc',
@@ -98,7 +98,7 @@ describe('EmergencyLastWithdrawService', () => {
 
     service = new EmergencyLastWithdrawService(
       prisma as unknown as PrismaService,
-      signer as unknown as SignerService,
+      rpc as unknown as RpcProviderService,
       recovery as unknown as RecoveryClientService,
       emergencyOtp as unknown as EmergencyRecoveryService,
       new AuditService(prisma as unknown as PrismaService),

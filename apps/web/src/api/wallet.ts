@@ -118,8 +118,21 @@ export async function signStart(params: {
   walletId: string;
   toAddress: string;
   amount: string;
+  idempotencyKey: string;
 }) {
-  const res = await api.post("/wallets/mpc/sign/start", params);
+  const res = await api.post(
+    "/wallets/mpc/sign/start",
+    {
+      walletId: params.walletId,
+      toAddress: params.toAddress,
+      amount: params.amount,
+    },
+    {
+      headers: {
+        "Idempotency-Key": params.idempotencyKey,
+      },
+    },
+  );
   return res.data as {
     sessionId: string;
     walletId: string;
@@ -129,6 +142,7 @@ export async function signStart(params: {
     feeWei: string;
     toAddress: string;
     fromAddress: string;
+    reused?: boolean;
   };
 }
 

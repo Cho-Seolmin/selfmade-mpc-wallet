@@ -11,7 +11,7 @@ import {
 } from '../audit/audit.constants';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { SignerService } from './signer.service';
+import { RpcProviderService } from './rpc-provider.service';
 import {
   assertWalletNotRetired,
   LIVE_WALLET_STATUSES,
@@ -21,7 +21,7 @@ import {
 export class WalletService {
   constructor(
     private prisma: PrismaService,
-    private signerService: SignerService,
+    private rpcProvider: RpcProviderService,
     private audit: AuditService,
   ) {}
 
@@ -212,7 +212,7 @@ export class WalletService {
   async getBalance(userId: string, walletId: string) {
     const wallet = await this.getOwnedMpcWallet(userId, walletId);
 
-    const balanceWei = await this.signerService
+    const balanceWei = await this.rpcProvider
       .getProvider()
       .getBalance(wallet.address);
 

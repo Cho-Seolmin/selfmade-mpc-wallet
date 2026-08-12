@@ -47,10 +47,16 @@ export async function withdrawViaAbSigning(params: {
   let sessionId: string | null = null;
 
   try {
+    const idempotencyKey =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `ab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
     const started = await signStart({
       walletId: params.walletId,
       toAddress: params.toAddress,
       amount: params.amount,
+      idempotencyKey,
     });
     sessionId = started.sessionId;
 

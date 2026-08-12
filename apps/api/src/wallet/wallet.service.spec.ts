@@ -3,12 +3,12 @@ import { WalletStatus } from '@prisma/client';
 import { WalletService } from './wallet.service';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { SignerService } from './signer.service';
+import { RpcProviderService } from './rpc-provider.service';
 
 describe('WalletService RETIRED guards', () => {
   let service: WalletService;
   let prisma: any;
-  let signer: { getProvider: jest.Mock };
+  let rpc: { getProvider: jest.Mock };
 
   const liveWallet = {
     id: 'w-live',
@@ -45,14 +45,14 @@ describe('WalletService RETIRED guards', () => {
         count: jest.fn().mockResolvedValue(0),
       },
     };
-    signer = {
+    rpc = {
       getProvider: jest.fn().mockReturnValue({
         getBalance: jest.fn().mockResolvedValue(5n),
       }),
     };
     service = new WalletService(
       prisma as unknown as PrismaService,
-      signer as unknown as SignerService,
+      rpc as unknown as RpcProviderService,
       new AuditService(prisma as unknown as PrismaService),
     );
   });

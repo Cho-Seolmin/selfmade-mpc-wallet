@@ -13,13 +13,14 @@
 | --- | --- | --- |
 | **A** | 고객 브라우저 (IndexedDB + 기기 AES-GCM) | 평상시 출금 참여 |
 | **B** | 메인 API (`Wallet.encryptedShareB`) | 평상시·비상 출금 참여 |
-| **C** | Recovery Server (별도 SQLite) | **비상 전용** — 일반 출금에 사용하지 않음 |
+| **C** | Recovery Server (별도 SQLite) | 초기 DKG + 비상 서명 전용 — 일반 출금에는 참여하지 않음 |
 
 - **임계값:** 2-of-3 (DKLs23 / Silence Laboratories WASM)
 - **일반 경로:** A + B Threshold Signing → 부분 금액 ETH 출금 (Share C 미사용, 지갑 ACTIVE 유지)
 - **비상 경로:** Google OTP → B + C wire-relay 전액 출금 → `RETIRED` (Share C는 Recovery 상주)
 - **전체 private key**를 생성·저장·재조립하지 않습니다.
 - Share는 각 보관 위치를 떠나지 않고, **MPC wire message만** 교환합니다.
+- API는 **백엔드 EOA/서명 private key를 두지 않습니다** (`RpcProviderService` = Sepolia `JsonRpcProvider`만). 가스는 MPC 지갑이 지불하고, broadcast는 이미 threshold-signed된 raw tx입니다.
 
 ---
 
@@ -47,7 +48,7 @@ packages/
 ### 1. 인증
 - 회원가입 / 로그인 (JWT httpOnly cookie)
 - 계정별 Google Authenticator TOTP (사용자별 random secret, `TOTP_ENCRYPTION_KEY`로 암호화 저장)
-- Settings에서 OTP secret / otpauth URL 확인
+- Settings에서 OTP secret / otpauth URL은 **버튼으로 10분간만** 표시 (이후 자동 숨김)
 
 ### 2. MPC 지갑 생성 (DKG)
 - 브라우저(A) + API(B) + Recovery(C) 2-of-3 DKG
@@ -55,23 +56,24 @@ packages/
   - Share A → IndexedDB 암호화 저장
   - Share B → API DB AES-GCM 저장
   - Share C → Recovery Server 저장
-  - PIN으로 암호화된 **Recovery File** 1회 다운로드
+  - PIN으로 암호화된 **Recovery File** 1회 다운로드 (PIN → **PBKDF2-SHA256, 210k iterations** → AES-GCM)
+- **Recovery File은 브라우저에서 생성되며 API/Recovery Server에 저장되거나 전송되지 않는다.** (성공 시 감사 이벤트만)
 
 ### 3. Browser Share 복구
 - Recovery File 업로드 + 6자리 PIN
 - 브라우저에서만 복호화 → IndexedDB에 Share A 재저장
-- Share / PIN은 서버로 전송하지 않음 (성공 시 감사 이벤트만 보고)
+- Share / PIN / Recovery File 본문은 서버로 전송하지 않음 (성공 시 감사 이벤트만 보고)
 
 ### 4. 일반 출금 (A+B)
 - ACTIVE 지갑 + Browser Share A 필요
-- 브라우저(A) ↔ API(B) 서명 라운드 후 Sepolia broadcast
+- 브라우저(A) ↔ API(B) 서명 라운드 후 Sepolia에 **signed raw** broadcast
 - 부분 금액 출금, Share B 유지, 지갑 상태 ACTIVE 유지
 - Share A 없음 / 잔액 초과 시 UI 경고
 
 ### 5. 비상 복구 (OTP + B+C)
 1. Google OTP 인증 → `RECOVERY_PENDING`
 2. 수신 주소 + OTP 재확인 → B+C threshold 서명 (**Share C는 Recovery 밖으로 나오지 않음**, wire message만 교환)
-3. **잔액 전액** 출금 (부분 출금 불가) 후 `RETIRED`
+3. **잔액 전액** 출금 (부분 출금 불가) 후 `RETIRED` — broadcast도 signed raw만 사용
 4. Share B 삭제, Share C retire, 이후 새 MPC 지갑 생성 가능
 
 ### 6. 지갑 수명주기
@@ -181,8 +183,7 @@ cd ../recovery && npx prisma db push && npx prisma generate
 | `JWT_SECRET` | JWT 서명 |
 | `TOTP_ENCRYPTION_KEY` | 계정별 TOTP secret AES-256 키 (64 hex, JWT와 분리) |
 | `FRONTEND_URL` | CORS (예: `http://localhost:5173`) |
-| `SEPOLIA_RPC_URL` | Sepolia RPC |
-| `BACKEND_SIGNER_PRIVATE_KEY` | Provider/가스용 (MPC 지갑 키 아님) |
+| `SEPOLIA_RPC_URL` | Sepolia RPC — 잔액 조회·signed raw broadcast (`BACKEND_SIGNER_*` 불필요) |
 | `WALLET_ENCRYPTION_KEY` | Share B AES-256 키 (64 hex) |
 | `RECOVERY_BASE_URL` | `http://localhost:3001` |
 | `RECOVERY_SERVICE_TOKEN` | Recovery와 동일한 서비스 토큰 |
@@ -227,7 +228,7 @@ npm run dev:web        # :5173
 | Method | Path | 설명 |
 | --- | --- | --- |
 | `POST` | `/wallets/mpc/dkg/start` … `/complete` | DKG 라운드 |
-| `POST` | `/wallets/mpc/sign/start` … `/complete` | A+B 일반 출금 서명 라운드 |
+| `POST` | `/wallets/mpc/sign/start` … `/complete` | A+B 일반 출금 서명 라운드 (`Idempotency-Key` 필수, 지갑당 진행 중 세션 1개) |
 | `POST` | `/wallets/:id/emergency/start` | OTP → `RECOVERY_PENDING` |
 | `POST` | `/wallets/:id/emergency/cancel` | `RECOVERY_PENDING` → `ACTIVE` (실수 취소) |
 | `POST` | `/wallets/:id/emergency/last-withdraw` | B+C 전액 출금 → `RETIRED` |
@@ -278,6 +279,7 @@ npm run test:integration
 - Recovery는 브라우저에서 호출하지 않음 (API ↔ Recovery만)
 - Share B / Share C 암호화 키 분리
 - Share C는 Recovery 프로세스 밖으로 export하지 않음 (B+C는 wire relay)
+- API에 `BACKEND_SIGNER_PRIVATE_KEY` 없음 — 체인 I/O는 `RpcProviderService`만
 - `RETIRED` 이후 해당 지갑 재서명 불가
 - OTP 연속 실패 시 짧은 잠금 (인메모리)
 

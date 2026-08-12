@@ -1,13 +1,15 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
+  GoneException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { getAddress } from 'ethers';
-import { WalletStatus } from '@prisma/client';
+import { Prisma, WalletStatus } from '@prisma/client';
 import {
   MPC_CHAIN_PATH,
   MPC_PARTY,
@@ -33,7 +35,7 @@ import {
   unsignedTxDigest32,
 } from './eth-transfer';
 import { Keyshare, Message, SignSession } from './wasm';
-import { SignerService } from '../wallet/signer.service';
+import { RpcProviderService } from '../wallet/rpc-provider.service';
 import { assertWalletNotRetired } from '../wallet/wallet-lifecycle';
 
 function createId(): string {
@@ -64,7 +66,44 @@ type SignSessionState = {
   createdAt: number;
 };
 
+type AbWithdrawMetadata = {
+  mode: 'NORMAL_AB';
+  sessionId: string;
+  feeWei: string;
+  digestB64: string;
+  msg1B: MpcWireMessage;
+  fromAddress: string;
+};
+
+type StartResult = {
+  sessionId: string;
+  walletId: string;
+  digestB64: string;
+  msg1B: MpcWireMessage;
+  amountWei: string;
+  feeWei: string;
+  toAddress: string;
+  fromAddress: string;
+  reused?: boolean;
+};
+
 const SESSION_TTL_MS = 10 * 60 * 1000;
+
+function scopedIdempotencyKey(walletId: string, rawKey: string): string {
+  return `ab:${walletId}:${rawKey.trim()}`;
+}
+
+function asAbMetadata(raw: unknown): AbWithdrawMetadata | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const m = raw as Record<string, unknown>;
+  if (m.mode !== 'NORMAL_AB') return null;
+  if (typeof m.sessionId !== 'string') return null;
+  if (typeof m.digestB64 !== 'string') return null;
+  if (typeof m.feeWei !== 'string') return null;
+  if (typeof m.fromAddress !== 'string') return null;
+  if (!m.msg1B || typeof m.msg1B !== 'object') return null;
+  return m as unknown as AbWithdrawMetadata;
+}
 
 @Injectable()
 export class SignOrchestratorService {
@@ -73,21 +112,31 @@ export class SignOrchestratorService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly signer: SignerService,
+    private readonly rpc: RpcProviderService,
     private readonly audit: AuditService,
   ) {}
 
   /**
    * Start A+B signing: prepare partial ETH transfer, open SignSession(B), return msg1B.
-   * Share A never leaves the browser.
+   * Idempotency-Key reuses the same PROCESSING withdraw when body matches.
+   * At most one NORMAL_AB PROCESSING withdraw per wallet (DB lock + check).
    */
   async start(
     userId: string,
     walletId: string,
     toAddressRaw: string,
     amount: string,
-  ) {
+    idempotencyKeyRaw?: string,
+  ): Promise<StartResult> {
     this.gc();
+
+    const rawKey = idempotencyKeyRaw?.trim();
+    if (!rawKey) {
+      throw new BadRequestException({
+        message: 'Idempotency-Key 헤더가 필요합니다.',
+        code: MpcErrorCode.VALIDATION_FAILED,
+      });
+    }
 
     let toAddress: string;
     try {
@@ -120,67 +169,156 @@ export class SignOrchestratorService {
       });
     }
 
+    const idempotencyKey = scopedIdempotencyKey(wallet.id, rawKey);
+    const amountWeiStr = amountWei.toString();
+
+    // Fast path: same Idempotency-Key already exists (outside lock is OK; body check is authoritative).
+    const existingByKey = await this.prisma.withdrawRequest.findUnique({
+      where: { idempotencyKey },
+    });
+    if (existingByKey) {
+      return this.reuseOrConflictExisting(
+        userId,
+        wallet.id,
+        existingByKey,
+        toAddress,
+        amountWeiStr,
+      );
+    }
+
     let prepared;
     try {
       prepared = await prepareAmountTransfer({
-        provider: this.signer.getProvider(),
+        provider: this.rpc.getProvider(),
         fromAddress: wallet.address,
         toAddress,
         amountWei,
       });
     } catch (err: any) {
-      const msg = err?.message || 'Failed to prepare transfer';
-      throw new BadRequestException(msg);
+      throw new BadRequestException(err?.message || 'Failed to prepare transfer');
     }
 
     const digest = unsignedTxDigest32(prepared.tx);
     const sessionId = createId();
+    const digestB64 = bytesToBase64(digest);
 
     const shareBPlain = decryptShareB(wallet.encryptedShareB);
     let sessionB: SignSession | null = null;
+
     try {
       const keyshareB = Keyshare.fromBytes(new Uint8Array(shareBPlain));
       shareBPlain.fill(0);
       sessionB = new SignSession(keyshareB, MPC_CHAIN_PATH);
-      const msg1BLive = sessionB.createFirstMessage();
-      const msg1B = encodeWireMessages([msg1BLive])[0]!;
+      const msg1B = encodeWireMessages([sessionB.createFirstMessage()])[0]!;
+      const stateB64 = bytesToBase64(sessionB.toBytes());
+      sessionB.free();
+      sessionB = null;
 
-      const withdraw = await this.prisma.withdrawRequest.create({
-        data: {
-          walletId: wallet.id,
-          amount: amountWei.toString(),
-          toAddress,
-          status: 'PROCESSING',
-          executionType: 'MPC',
-          metadata: {
-            mode: 'NORMAL_AB',
-            sessionId,
-            feeWei: prepared.feeWei.toString(),
+      const metadata: AbWithdrawMetadata = {
+        mode: 'NORMAL_AB',
+        sessionId,
+        feeWei: prepared.feeWei.toString(),
+        digestB64,
+        msg1B,
+        fromAddress: wallet.address,
+      };
+
+      const withdraw = await this.prisma.$transaction(async (tx) => {
+        // Serialize start per wallet (single-instance portfolio; also helps races).
+        await tx.$queryRaw`
+          SELECT id FROM "Wallet" WHERE id = ${wallet.id} FOR UPDATE
+        `;
+
+        const again = await tx.withdrawRequest.findUnique({
+          where: { idempotencyKey },
+        });
+        if (again) {
+          // Concurrent duplicate start with same key — signal reuse outside.
+          return { kind: 'reuse' as const, row: again };
+        }
+
+        const cutoff = new Date(Date.now() - SESSION_TTL_MS);
+        const stale = await tx.withdrawRequest.findMany({
+          where: {
+            walletId: wallet.id,
+            status: 'PROCESSING',
+            createdAt: { lt: cutoff },
           },
-        },
+        });
+        for (const row of stale) {
+          if (asAbMetadata(row.metadata)) {
+            await tx.withdrawRequest.update({
+              where: { id: row.id },
+              data: {
+                status: 'EXPIRED',
+                failureReason: 'sign session expired',
+              },
+            });
+            const meta = asAbMetadata(row.metadata);
+            if (meta) this.sessions.delete(meta.sessionId);
+          }
+        }
+
+        const openRows = await tx.withdrawRequest.findMany({
+          where: { walletId: wallet.id, status: 'PROCESSING' },
+        });
+        const busy = openRows.find((r) => asAbMetadata(r.metadata));
+        if (busy) {
+          throw new ConflictException({
+            message:
+              '이 지갑에 진행 중인 일반 출금 서명이 있습니다. 완료·취소 후 다시 시도하세요.',
+            code: MpcErrorCode.SIGN_SESSION_BUSY,
+          });
+        }
+
+        try {
+          return {
+            kind: 'created' as const,
+            row: await tx.withdrawRequest.create({
+              data: {
+                walletId: wallet.id,
+                amount: amountWeiStr,
+                toAddress,
+                status: 'PROCESSING',
+                executionType: 'MPC',
+                idempotencyKey,
+                metadata: metadata as unknown as Prisma.InputJsonValue,
+              },
+            }),
+          };
+        } catch (err: any) {
+          // Unique idempotencyKey race
+          if (
+            err instanceof Prisma.PrismaClientKnownRequestError &&
+            err.code === 'P2002'
+          ) {
+            const raced = await tx.withdrawRequest.findUnique({
+              where: { idempotencyKey },
+            });
+            if (raced) return { kind: 'reuse' as const, row: raced };
+          }
+          throw err;
+        }
       });
 
-      await this.audit.write({
-        walletId: wallet.id,
-        userId,
-        withdrawRequestId: withdraw.id,
-        eventType: AuditEventType.WITHDRAW_REQUESTED,
-        message: 'Normal A+B withdraw signing started',
-        data: {
+      if (withdraw.kind === 'reuse') {
+        return this.reuseOrConflictExisting(
+          userId,
+          wallet.id,
+          withdraw.row,
           toAddress,
-          amountWei: amountWei.toString(),
-          sessionId,
-        },
-      });
+          amountWeiStr,
+        );
+      }
 
       const state: SignSessionState = {
         sessionId,
         userId,
         walletId: wallet.id,
-        withdrawRequestId: withdraw.id,
-        stateB64: bytesToBase64(sessionB.toBytes()),
+        withdrawRequestId: withdraw.row.id,
+        stateB64,
         msg1B,
-        digestB64: bytesToBase64(digest),
+        digestB64,
         tx: {
           to: toAddress,
           value: prepared.valueWei.toString(),
@@ -195,20 +333,38 @@ export class SignOrchestratorService {
         createdAt: Date.now(),
       };
       this.sessions.set(sessionId, state);
-      sessionB.free();
-      sessionB = null;
+
+      await this.audit.write({
+        walletId: wallet.id,
+        userId,
+        withdrawRequestId: withdraw.row.id,
+        eventType: AuditEventType.WITHDRAW_REQUESTED,
+        message: 'Normal A+B withdraw signing started',
+        data: {
+          toAddress,
+          amountWei: amountWeiStr,
+          sessionId,
+        },
+      });
 
       return {
         sessionId,
         walletId: wallet.id,
-        digestB64: state.digestB64,
+        digestB64,
         msg1B,
-        amountWei: amountWei.toString(),
+        amountWei: amountWeiStr,
         feeWei: prepared.feeWei.toString(),
         toAddress,
         fromAddress: wallet.address,
       };
     } catch (err) {
+      if (
+        err instanceof ConflictException ||
+        err instanceof BadRequestException ||
+        err instanceof GoneException
+      ) {
+        throw err;
+      }
       this.logger.error(`sign start failed for wallet ${wallet.id}`);
       throw err;
     } finally {
@@ -292,14 +448,44 @@ export class SignOrchestratorService {
     }
   }
 
-  /** Browser sends msg4A (lastMessage); server lastMessage+combine, broadcast. */
+  /**
+   * Browser sends msg4A; combine + broadcast.
+   * If withdraw already EXECUTED (client retry after success), return prior result.
+   */
   async complete(userId: string, sessionId: string, msg4A: MpcWireMessage[]) {
-    const state = this.requireOwned(userId, sessionId);
+    this.gc();
+
+    const existingExecuted = await this.findExecutedBySession(userId, sessionId);
+    if (existingExecuted) {
+      return existingExecuted;
+    }
+
+    const state = this.sessions.get(sessionId);
+    if (!state || state.userId !== userId) {
+      throw new NotFoundException('Sign session not found');
+    }
     if (state.step !== 'WAIT_MSG4A') {
       throw new BadRequestException(`unexpected step ${state.step}`);
     }
     if (msg4A.length < 1) {
       throw new BadRequestException('missing party A last message');
+    }
+
+    const wr = await this.prisma.withdrawRequest.findUnique({
+      where: { id: state.withdrawRequestId },
+    });
+    if (wr?.status === 'EXECUTED') {
+      this.sessions.delete(sessionId);
+      return {
+        withdraw: {
+          id: wr.id,
+          amount: wr.amount,
+          toAddress: wr.toAddress,
+          status: 'EXECUTED' as const,
+          txHash: wr.txHash,
+        },
+        message: '출금이 이미 완료되었습니다.',
+      };
     }
 
     const sessionB = SignSession.fromBytes(base64ToBytes(state.stateB64));
@@ -315,7 +501,7 @@ export class SignOrchestratorService {
 
       const tx = txFromStoredFields(state.tx);
       const raw = serializeSignedTransfer(tx, signature);
-      const response = await this.signer
+      const response = await this.rpc
         .getProvider()
         .broadcastTransaction(raw);
       await response.wait(1);
@@ -396,6 +582,98 @@ export class SignOrchestratorService {
         .catch(() => undefined);
     }
     return { ok: true as const };
+  }
+
+  private reuseOrConflictExisting(
+    userId: string,
+    walletId: string,
+    row: {
+      id: string;
+      walletId: string;
+      amount: string;
+      toAddress: string;
+      status: string;
+      metadata: unknown;
+    },
+    toAddress: string,
+    amountWeiStr: string,
+  ): StartResult {
+    if (row.walletId !== walletId) {
+      throw new ConflictException({
+        message: 'Idempotency-Key가 다른 지갑 요청에 이미 사용되었습니다.',
+        code: MpcErrorCode.IDEMPOTENCY_CONFLICT,
+      });
+    }
+
+    const meta = asAbMetadata(row.metadata);
+    if (!meta) {
+      throw new ConflictException({
+        message: 'Idempotency-Key가 일반 출금 요청과 일치하지 않습니다.',
+        code: MpcErrorCode.IDEMPOTENCY_CONFLICT,
+      });
+    }
+
+    if (
+      getAddress(row.toAddress) !== getAddress(toAddress) ||
+      row.amount !== amountWeiStr
+    ) {
+      throw new ConflictException({
+        message:
+          '같은 Idempotency-Key로 다른 수신 주소/금액이 요청되었습니다.',
+        code: MpcErrorCode.IDEMPOTENCY_CONFLICT,
+      });
+    }
+
+    const live = this.sessions.get(meta.sessionId);
+    if (!live || live.userId !== userId || live.walletId !== walletId) {
+      throw new GoneException({
+        message:
+          '이전 서명 세션이 만료되었습니다. 새 Idempotency-Key로 다시 시작하세요.',
+        code: MpcErrorCode.SIGN_SESSION_GONE,
+      });
+    }
+
+    if (row.status !== 'PROCESSING') {
+      throw new ConflictException({
+        message: `이 Idempotency-Key 출금은 이미 ${row.status} 상태입니다.`,
+        code: MpcErrorCode.IDEMPOTENCY_CONFLICT,
+      });
+    }
+
+    return {
+      sessionId: meta.sessionId,
+      walletId,
+      digestB64: live.digestB64,
+      msg1B: live.msg1B,
+      amountWei: amountWeiStr,
+      feeWei: meta.feeWei,
+      toAddress,
+      fromAddress: meta.fromAddress,
+      reused: true,
+    };
+  }
+
+  private async findExecutedBySession(userId: string, sessionId: string) {
+    const rows = await this.prisma.withdrawRequest.findMany({
+      where: {
+        status: 'EXECUTED',
+        wallet: { userId },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+    const match = rows.find((r) => asAbMetadata(r.metadata)?.sessionId === sessionId);
+    if (!match) return null;
+    return {
+      withdraw: {
+        id: match.id,
+        amount: match.amount,
+        toAddress: match.toAddress,
+        status: 'EXECUTED' as const,
+        txHash: match.txHash,
+      },
+      message: '출금이 이미 완료되었습니다.',
+    };
   }
 
   private async requireActiveMpcWallet(userId: string, walletId: string) {

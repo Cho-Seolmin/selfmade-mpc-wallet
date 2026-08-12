@@ -41,6 +41,8 @@ const TABS = [
 
 type TabKey = (typeof TABS)[number]["key"];
 
+const TOTP_REVEAL_MS = 10 * 60 * 1000;
+
 function Switch({
   checked,
   onChange,
@@ -105,6 +107,9 @@ export default function SettingsPage() {
   const [pwSubmitting, setPwSubmitting] = useState(false);
   const [totpSetup, setTotpSetup] = useState<TotpSetup | null>(null);
   const [totpError, setTotpError] = useState("");
+  const [totpLoading, setTotpLoading] = useState(false);
+  const [totpVisibleUntil, setTotpVisibleUntil] = useState<number | null>(null);
+  const [totpRemainingSec, setTotpRemainingSec] = useState(0);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -118,13 +123,6 @@ export default function SettingsPage() {
         setMe(meData);
         setPreferences(prefData);
         setStatus(statusData);
-
-        try {
-          const totp = await getTotpSetup();
-          setTotpSetup(totp);
-        } catch {
-          setTotpError("OTP 설정 정보를 불러오지 못했습니다.");
-        }
       } catch (err: any) {
         setError(err?.response?.data?.message || "설정 정보 조회 실패");
       } finally {
@@ -134,6 +132,51 @@ export default function SettingsPage() {
 
     fetchData();
   }, []);
+
+  useEffect(() => {
+    if (!totpVisibleUntil) {
+      setTotpRemainingSec(0);
+      return;
+    }
+
+    const tick = () => {
+      const leftMs = totpVisibleUntil - Date.now();
+      if (leftMs <= 0) {
+        setTotpSetup(null);
+        setTotpVisibleUntil(null);
+        setTotpRemainingSec(0);
+        return;
+      }
+      setTotpRemainingSec(Math.ceil(leftMs / 1000));
+    };
+
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [totpVisibleUntil]);
+
+  const hideTotpSetup = () => {
+    setTotpSetup(null);
+    setTotpVisibleUntil(null);
+    setTotpRemainingSec(0);
+    setTotpError("");
+  };
+
+  const revealTotpSetup = async () => {
+    setTotpError("");
+    setTotpLoading(true);
+    try {
+      const totp = await getTotpSetup();
+      setTotpSetup(totp);
+      setTotpVisibleUntil(Date.now() + TOTP_REVEAL_MS);
+    } catch {
+      setTotpError("OTP 설정 정보를 불러오지 못했습니다.");
+      setTotpSetup(null);
+      setTotpVisibleUntil(null);
+    } finally {
+      setTotpLoading(false);
+    }
+  };
 
   const savePreferences = async (patch: Partial<UserPreference>) => {
     if (!preferences) return;
@@ -267,15 +310,44 @@ export default function SettingsPage() {
               <span className="badge badge--success">계정별 OTP</span>
             </div>
             <p style={{ fontSize: "13px", color: "var(--color-text-muted)", marginBottom: "14px" }}>
-              Google Authenticator 등에 아래 secret을 등록하세요.
+              Google Authenticator 등록용 secret은 버튼을 누른 뒤 10분만 표시됩니다. 그 후에는 다시 숨겨집니다.
             </p>
             {totpError && (
               <div className="alert alert--danger" style={{ marginBottom: "14px" }}>
                 {totpError}
               </div>
             )}
+            {!totpSetup && (
+              <button
+                type="button"
+                className="btn btn--secondary"
+                onClick={revealTotpSetup}
+                disabled={totpLoading}
+                style={{ marginBottom: "14px" }}
+              >
+                {totpLoading ? "불러오는 중..." : "OTP secret 보기 (10분)"}
+              </button>
+            )}
             {totpSetup && (
               <div className="info-box info-box--neutral" style={{ marginBottom: "14px" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: "12px",
+                    marginBottom: "10px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <span style={{ fontSize: "12px", color: "var(--color-text-muted)" }}>
+                    남은 표시 시간 {Math.floor(totpRemainingSec / 60)}:
+                    {String(totpRemainingSec % 60).padStart(2, "0")}
+                  </span>
+                  <button type="button" className="btn btn--secondary" onClick={hideTotpSetup}>
+                    지금 숨기기
+                  </button>
+                </div>
                 <div style={{ fontSize: "12px", color: "var(--color-text-muted)", marginBottom: "6px" }}>
                   OTP Secret
                 </div>
@@ -293,7 +365,7 @@ export default function SettingsPage() {
                   계정마다 랜덤 TOTP secret을 발급하고, 서버에는 TOTP_ENCRYPTION_KEY로 암호화해 저장합니다.
                 </div>
               </div>
-              <Switch checked={Boolean(totpSetup)} onChange={() => {}} disabled />
+              <Switch checked={Boolean(status?.otpConfigured)} onChange={() => {}} disabled />
             </div>
           </div>
         </>

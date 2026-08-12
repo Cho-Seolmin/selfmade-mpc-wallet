@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { WalletStatus } from '@prisma/client';
 import { Transaction, getBytes, keccak256 } from 'ethers';
 import {
@@ -15,14 +15,10 @@ import {
 import { AuditService } from '../audit/audit.service';
 import { encryptShareB } from '../common/crypto/share-b-encryption';
 import { PrismaService } from '../prisma/prisma.service';
-import { SignerService } from '../wallet/signer.service';
+import { RpcProviderService } from '../wallet/rpc-provider.service';
 import { SignOrchestratorService } from './sign-orchestrator.service';
 import { KeygenSession, Keyshare, Message, SignSession } from './wasm';
 
-/**
- * A+B sign HTTP round protocol against SignOrchestratorService (real WASM).
- * Broadcast is mocked; chain fee/balance are mocked via eth-transfer mock.
- */
 jest.mock('./eth-transfer', () => {
   const actual = jest.requireActual('./eth-transfer');
   const digest = getBytes(
@@ -63,6 +59,7 @@ describe('SignOrchestratorService A+B rounds', () => {
   let shareABytes: Uint8Array;
   let encryptedShareB: string;
   let address: string;
+  let withdrawStore: Map<string, any>;
 
   beforeAll(() => {
     if (!process.env.WALLET_ENCRYPTION_KEY) {
@@ -84,6 +81,7 @@ describe('SignOrchestratorService A+B rounds', () => {
   });
 
   beforeEach(() => {
+    withdrawStore = new Map();
     prisma = {
       wallet: {
         findUnique: jest.fn().mockResolvedValue({
@@ -96,15 +94,56 @@ describe('SignOrchestratorService A+B rounds', () => {
         }),
       },
       withdrawRequest: {
-        create: jest.fn().mockResolvedValue({ id: 'wr1' }),
-        update: jest.fn().mockResolvedValue({}),
+        findUnique: jest.fn(async ({ where }: any) => {
+          if (where.idempotencyKey) {
+            for (const row of withdrawStore.values()) {
+              if (row.idempotencyKey === where.idempotencyKey) return row;
+            }
+            return null;
+          }
+          if (where.id) return withdrawStore.get(where.id) ?? null;
+          return null;
+        }),
+        findMany: jest.fn(async ({ where }: any) => {
+          return [...withdrawStore.values()].filter((row) => {
+            if (where.walletId && row.walletId !== where.walletId) return false;
+            if (where.status && row.status !== where.status) return false;
+            if (where.wallet?.userId && row.userId !== where.wallet.userId) {
+              return false;
+            }
+            if (where.createdAt?.lt && row.createdAt >= where.createdAt.lt) {
+              return false;
+            }
+            return true;
+          });
+        }),
+        create: jest.fn(async ({ data }: any) => {
+          const row = {
+            id: `wr-${withdrawStore.size + 1}`,
+            userId: 'u1',
+            createdAt: new Date(),
+            txHash: null,
+            ...data,
+          };
+          withdrawStore.set(row.id, row);
+          return row;
+        }),
+        update: jest.fn(async ({ where, data }: any) => {
+          const row = withdrawStore.get(where.id);
+          if (!row) return {};
+          Object.assign(row, data);
+          return row;
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       withdrawalAuditLog: {
         create: jest.fn().mockResolvedValue({}),
       },
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'w1' }]),
+      $transaction: jest.fn(async (fn: any) => fn(prisma)),
     };
 
-    const signer = {
+    const rpc = {
       getProvider: jest.fn().mockReturnValue({
         broadcastTransaction: jest.fn().mockResolvedValue({
           hash: '0xabctx',
@@ -115,7 +154,7 @@ describe('SignOrchestratorService A+B rounds', () => {
 
     service = new SignOrchestratorService(
       prisma as unknown as PrismaService,
-      signer as unknown as SignerService,
+      rpc as unknown as RpcProviderService,
       new AuditService(prisma as unknown as PrismaService),
     );
   });
@@ -135,16 +174,87 @@ describe('SignOrchestratorService A+B rounds', () => {
         'w1',
         '0x2222222222222222222222222222222222222222',
         '0.001',
+        'key-1',
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('completes A+B signing rounds and broadcasts', async () => {
+  it('rejects missing Idempotency-Key', async () => {
+    await expect(
+      service.start(
+        'u1',
+        'w1',
+        '0x2222222222222222222222222222222222222222',
+        '0.001',
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('reuses start for same Idempotency-Key and body', async () => {
+    const a = await service.start(
+      'u1',
+      'w1',
+      '0x2222222222222222222222222222222222222222',
+      '0.001',
+      'same-key',
+    );
+    const b = await service.start(
+      'u1',
+      'w1',
+      '0x2222222222222222222222222222222222222222',
+      '0.001',
+      'same-key',
+    );
+    expect(b.sessionId).toBe(a.sessionId);
+    expect(b.reused).toBe(true);
+    expect(withdrawStore.size).toBe(1);
+  });
+
+  it('conflicts when Idempotency-Key is reused with different body', async () => {
+    await service.start(
+      'u1',
+      'w1',
+      '0x2222222222222222222222222222222222222222',
+      '0.001',
+      'conflict-key',
+    );
+    await expect(
+      service.start(
+        'u1',
+        'w1',
+        '0x3333333333333333333333333333333333333333',
+        '0.5',
+        'conflict-key',
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('limits to one PROCESSING NORMAL_AB session per wallet', async () => {
+    await service.start(
+      'u1',
+      'w1',
+      '0x2222222222222222222222222222222222222222',
+      '0.001',
+      'key-a',
+    );
+    await expect(
+      service.start(
+        'u1',
+        'w1',
+        '0x2222222222222222222222222222222222222222',
+        '0.002',
+        'key-b',
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('completes A+B signing rounds and returns EXECUTED on complete retry', async () => {
     const started = await service.start(
       'u1',
       'w1',
       '0x2222222222222222222222222222222222222222',
       '0.001',
+      'complete-key',
     );
 
     const keyshareA = Keyshare.fromBytes(shareABytes);
@@ -185,11 +295,10 @@ describe('SignOrchestratorService A+B rounds', () => {
 
       expect(done.withdraw.status).toBe('EXECUTED');
       expect(done.withdraw.txHash).toBe('0xabctx');
-      expect(prisma.withdrawRequest.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ status: 'EXECUTED' }),
-        }),
-      );
+
+      const retried = await service.complete('u1', started.sessionId, msg4A);
+      expect(retried.withdraw.txHash).toBe('0xabctx');
+      expect(retried.message).toContain('이미 완료');
     } finally {
       sessionA.free();
     }

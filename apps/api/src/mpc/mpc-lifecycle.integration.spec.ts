@@ -20,7 +20,7 @@ import { RecoveryClientService } from './recovery-client.service';
 import { KeygenSession, Message } from './wasm';
 import { EmergencyRecoveryService } from '../wallet/emergency-recovery.service';
 import { EmergencyLastWithdrawService } from '../wallet/emergency-last-withdraw.service';
-import { SignerService } from '../wallet/signer.service';
+import { RpcProviderService } from '../wallet/rpc-provider.service';
 import { WalletService } from '../wallet/wallet.service';
 
 config({ path: resolve(__dirname, '../../.env') });
@@ -150,15 +150,15 @@ describeIntegration('MPC lifecycle integration (STEP 12)', () => {
     await prisma.$connect();
     orchestrator = new DkgOrchestratorService(prisma, recovery, audit);
     emergency = new EmergencyRecoveryService(prisma, audit, totp);
-    const signer = new SignerService();
+    const rpc = new RpcProviderService();
     lastWithdraw = new EmergencyLastWithdrawService(
       prisma,
-      signer,
+      rpc,
       recovery,
       emergency,
       audit,
     );
-    wallets = new WalletService(prisma, signer, audit);
+    wallets = new WalletService(prisma, rpc, audit);
 
     const user = await prisma.user.create({
       data: {

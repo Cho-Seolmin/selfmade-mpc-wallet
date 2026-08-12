@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   Post,
   Query,
@@ -106,12 +107,17 @@ export class WalletController {
   /** Start normal A+B threshold signing for a partial ETH withdraw. */
   @Post('mpc/sign/start')
   @UseGuards(JwtAuthGuard)
-  signStart(@Req() req: any, @Body() dto: SignStartDto) {
+  signStart(
+    @Req() req: any,
+    @Body() dto: SignStartDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
     return this.sign.start(
       req.user.sub,
       dto.walletId,
       dto.toAddress,
       dto.amount,
+      idempotencyKey,
     );
   }
 
