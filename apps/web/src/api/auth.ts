@@ -1,5 +1,5 @@
 import { api } from "./axios";
-import type { LoginResponse, Me, TotpSetup } from "../types/auth";
+import type { LoginResponse, Me, TotpSetup, TotpSetupStatus } from "../types/auth";
 
 export async function login(email: string, password: string): Promise<LoginResponse> {
   const res = await api.post<LoginResponse>("/auth/login", { email, password });
@@ -15,6 +15,12 @@ export async function getMe(): Promise<Me> {
   return res.data;
 }
 
+export async function getTotpStatus(): Promise<TotpSetupStatus> {
+  const res = await api.get<TotpSetupStatus>("/auth/totp-status");
+  return res.data;
+}
+
+/** One-time reveal — second call returns 410. */
 export async function getTotpSetup(): Promise<TotpSetup> {
   const res = await api.get<TotpSetup>("/auth/totp-setup");
   return res.data;

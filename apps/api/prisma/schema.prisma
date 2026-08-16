@@ -82,6 +82,8 @@ model User {
   status       UserStatus @default(PENDING)
   /// AES-256-GCM encrypted TOTP secret (base32). Key: TOTP_ENCRYPTION_KEY.
   encryptedTotpSecret String?
+  /// Set when plaintext secret was returned once via /auth/totp-setup. Re-reveal blocked after.
+  totpSecretRevealedAt DateTime?
   createdAt    DateTime   @default(now())
 
   wallets    Wallet[]

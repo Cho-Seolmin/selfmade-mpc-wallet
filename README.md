@@ -48,7 +48,7 @@ packages/
 ### 1. 인증
 - 회원가입 / 로그인 (JWT httpOnly cookie)
 - 계정별 Google Authenticator TOTP (사용자별 random secret, `TOTP_ENCRYPTION_KEY`로 암호화 저장)
-- Settings에서 OTP secret / otpauth URL은 **버튼으로 10분간만** 표시 (이후 자동 숨김)
+- Settings에서 OTP secret / otpauth URL은 **서버 1회만 조회** 가능 · UI는 최대 10분 표시 후 숨김 (재조회 불가)
 
 ### 2. MPC 지갑 생성 (DKG)
 - 브라우저(A) + API(B) + Recovery(C) 2-of-3 DKG
@@ -60,13 +60,15 @@ packages/
 - **Recovery File은 브라우저에서 생성되며 API/Recovery Server에 저장되거나 전송되지 않는다.** (성공 시 감사 이벤트만)
 
 ### 3. Browser Share 복구
-- Recovery File 업로드 + 6자리 PIN
+- Recovery File 업로드 + 6자리 PIN (복호화도 **동일 PBKDF2 → AES-GCM**)
 - 브라우저에서만 복호화 → IndexedDB에 Share A 재저장
 - Share / PIN / Recovery File 본문은 서버로 전송하지 않음 (성공 시 감사 이벤트만 보고)
 
 ### 4. 일반 출금 (A+B)
 - ACTIVE 지갑 + Browser Share A 필요
 - 브라우저(A) ↔ API(B) 서명 라운드 후 Sepolia에 **signed raw** broadcast
+- `Idempotency-Key` 필수 · 지갑당 진행 중 서명 세션 1개 · `EXECUTED` 재요청 시 기존 txHash 반환
+- **WYSIWYS:** `sign/start`의 unsigned `tx`로 브라우저가 digest를 재계산·대조한 뒤 서명 (불일치 시 abort)
 - 부분 금액 출금, Share B 유지, 지갑 상태 ACTIVE 유지
 - Share A 없음 / 잔액 초과 시 UI 경고
 
@@ -149,6 +151,8 @@ sequenceDiagram
   U->>W: toAddress + amount
   W->>A: POST mpc/sign/start
   A->>A: Decrypt Share B, prepare tx
+  A-->>W: digestB64 + unsigned tx
+  Note over W: WYSIWYS — recompute digest from tx
   W->>W: Load Share A (IndexedDB)
   W->>A: sign rounds (msg relay)
   A->>A: combine signature
@@ -238,7 +242,8 @@ npm run dev:web        # :5173
 | `GET` | `/wallets/:id/withdraws` | 출금 이력 |
 | `GET` | `/wallets/:id/audits` | 감사 로그 |
 | `POST` | `/wallets/:id/audit-events` | 브라우저 비민감 이벤트 보고 |
-| `GET` | `/auth/totp-setup` | OTP secret / otpauth URL |
+| `GET` | `/auth/totp-status` | OTP 설정 여부 · secret 이미 공개됐는지 (평문 없음) |
+| `GET` | `/auth/totp-setup` | OTP secret / otpauth URL **1회만** (이후 410) |
 
 Recovery (`:3001`, service token only):
 
@@ -275,8 +280,10 @@ npm run test:integration
 
 ## 보안 메모 (데모 기준)
 
-- Share / PIN / OTP 값은 로그·API 응답에 넣지 않음
+- Share / PIN은 로그·일반 API 응답에 넣지 않음. OTP 평문 secret은 `/auth/totp-setup` **1회 reveal만** (이후 410)
+- A+B 출금 WYSIWYS: 브라우저가 unsigned `tx`로 digest 재검증 후 서명
 - Recovery는 브라우저에서 호출하지 않음 (API ↔ Recovery만)
+- Recovery File PIN은 PBKDF2-SHA256(210k) → AES-GCM
 - Share B / Share C 암호화 키 분리
 - Share C는 Recovery 프로세스 밖으로 export하지 않음 (B+C는 wire relay)
 - API에 `BACKEND_SIGNER_PRIVATE_KEY` 없음 — 체인 I/O는 `RpcProviderService`만

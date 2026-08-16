@@ -207,6 +207,10 @@ describe('SignOrchestratorService A+B rounds', () => {
     );
     expect(b.sessionId).toBe(a.sessionId);
     expect(b.reused).toBe(true);
+    expect(b.tx).toEqual(a.tx);
+    expect(a.tx.to.toLowerCase()).toBe(
+      '0x2222222222222222222222222222222222222222',
+    );
     expect(withdrawStore.size).toBe(1);
   });
 

@@ -67,12 +67,19 @@ export class AuthController {
     return this.auth.getMe(req.user.sub);
   }
 
+  @Get('totp-status')
+  @UseGuards(JwtAuthGuard)
+  getTotpStatus(@Req() req: any) {
+    return this.totp.getSetupStatus(req.user.sub as string);
+  }
+
+  /** One-time plaintext OTP secret reveal (subsequent calls → 410). */
   @Get('totp-setup')
   @UseGuards(JwtAuthGuard)
   getTotpSetup(@Req() req: any) {
     const userId = req.user.sub as string;
     const email = req.user.email as string;
-    return this.totp.getOrCreateSetup(userId, email);
+    return this.totp.revealSetupOnce(userId, email);
   }
 
   @Patch('password')

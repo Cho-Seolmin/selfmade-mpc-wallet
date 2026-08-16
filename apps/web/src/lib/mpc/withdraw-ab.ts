@@ -1,7 +1,6 @@
 import {
   MPC_CHAIN_PATH,
   MPC_PARTY,
-  base64ToBytes,
   decodeWireMessages,
   encodeWireMessages,
   filterMessages,
@@ -17,6 +16,7 @@ import {
 } from "../../api/wallet";
 import { loadBrowserShareABytes } from "./browser-share-store";
 import { Keyshare, Message, SignSession, ensureMpcWasm } from "./index";
+import { assertWysiwysDigest } from "./wysiwys";
 
 export type WithdrawAbResult = {
   withdraw: {
@@ -32,6 +32,7 @@ export type WithdrawAbResult = {
 /**
  * Browser party A + Main API party B threshold sign a partial ETH transfer.
  * Share A is loaded from IndexedDB only for this call and wiped from memory after.
+ * Before signing, WYSIWYS recomputes digest from returned tx fields vs UI intent.
  */
 export async function withdrawViaAbSigning(params: {
   walletId: string;
@@ -59,6 +60,20 @@ export async function withdrawViaAbSigning(params: {
       idempotencyKey,
     });
     sessionId = started.sessionId;
+
+    if (!started.tx) {
+      throw new Error(
+        "WYSIWYS: sign/start 응답에 tx 필드가 없습니다. API를 업데이트하세요.",
+      );
+    }
+
+    const digest = assertWysiwysDigest({
+      userToAddress: params.toAddress,
+      userAmount: params.amount,
+      digestB64: started.digestB64,
+      amountWei: started.amountWei,
+      tx: started.tx,
+    });
 
     const keyshareA = Keyshare.fromBytes(shareABytes);
     shareABytes.fill(0);
@@ -92,7 +107,6 @@ export async function withdrawViaAbSigning(params: {
 
     await signRound3(sessionId, msg3A);
 
-    const digest = base64ToBytes(started.digestB64);
     const msg4ALive = sessionA.lastMessage(digest);
     const msg4A = encodeWireMessages([msg4ALive]);
 

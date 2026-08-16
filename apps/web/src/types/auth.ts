@@ -14,8 +14,16 @@ export type LoginResponse = {
   ok: true;
 };
 
+export type TotpSetupStatus = {
+  configured: boolean;
+  alreadyRevealed: boolean;
+};
+
 export type TotpSetup = {
   secret: string;
   otpauthUrl: string;
   hint: string;
+  created?: boolean;
+  configured?: boolean;
+  alreadyRevealed?: boolean;
 };

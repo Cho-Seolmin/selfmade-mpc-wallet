@@ -142,6 +142,15 @@ export async function signStart(params: {
     feeWei: string;
     toAddress: string;
     fromAddress: string;
+    tx: {
+      to: string;
+      value: string;
+      nonce: number;
+      gasLimit: string;
+      maxFeePerGas: string;
+      maxPriorityFeePerGas: string;
+      chainId: string;
+    };
     reused?: boolean;
   };
 }

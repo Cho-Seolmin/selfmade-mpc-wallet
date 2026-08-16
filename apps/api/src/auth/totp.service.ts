@@ -1,4 +1,5 @@
 import {
+  GoneException,
   Injectable,
   NotFoundException,
   ServiceUnavailableException,
@@ -16,23 +17,59 @@ import {
   verifyTotpToken,
 } from './totp.util';
 
+export type TotpSetupStatus = {
+  configured: boolean;
+  alreadyRevealed: boolean;
+};
+
 @Injectable()
 export class TotpService {
   constructor(private readonly prisma: PrismaService) {}
 
+  /** Status only — never returns plaintext, never marks revealed. */
+  async getSetupStatus(userId: string): Promise<TotpSetupStatus> {
+    this.assertConfigured();
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { encryptedTotpSecret: true, totpSecretRevealedAt: true },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    return {
+      configured: Boolean(user.encryptedTotpSecret),
+      alreadyRevealed: Boolean(user.totpSecretRevealedAt),
+    };
+  }
+
   /**
-   * Ensure the user has a stored random TOTP secret; return plaintext for QR setup.
-   * Secret is encrypted at rest with TOTP_ENCRYPTION_KEY.
+   * One-time plaintext reveal for Authenticator enrollment.
+   * Creates a random secret if missing; subsequent calls return 410.
    */
-  async getOrCreateSetup(userId: string, email: string) {
+  async revealSetupOnce(userId: string, email: string) {
     this.assertConfigured();
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, encryptedTotpSecret: true },
+      select: {
+        id: true,
+        email: true,
+        encryptedTotpSecret: true,
+        totpSecretRevealedAt: true,
+      },
     });
     if (!user) {
       throw new NotFoundException('User not found');
+    }
+
+    if (user.totpSecretRevealedAt) {
+      throw new GoneException({
+        message:
+          'OTP secret은 이미 1회 표시되었습니다. 재조회할 수 없습니다.',
+        code: 'TOTP_SECRET_ALREADY_REVEALED',
+        configured: true,
+        alreadyRevealed: true,
+      });
     }
 
     let secret: string;
@@ -41,20 +78,34 @@ export class TotpService {
       secret = decryptTotpSecret(user.encryptedTotpSecret);
     } else {
       secret = generateTotpSecret();
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { encryptedTotpSecret: encryptTotpSecret(secret) },
-      });
       created = true;
     }
+
+    const revealedAt = new Date();
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(created
+          ? { encryptedTotpSecret: encryptTotpSecret(secret) }
+          : {}),
+        totpSecretRevealedAt: revealedAt,
+      },
+    });
 
     const labelEmail = email || user.email;
     return {
       secret,
       otpauthUrl: buildTotpAuthUrl(secret, labelEmail),
       created,
-      hint: 'Google Authenticator 등에 아래 secret 또는 otpauth URL을 등록하세요. JWT와 별도 키(TOTP_ENCRYPTION_KEY)로 암호화 저장됩니다.',
+      alreadyRevealed: false,
+      configured: true,
+      hint: '이 secret은 한 번만 표시됩니다. Google Authenticator에 지금 등록하세요. (TOTP_ENCRYPTION_KEY로 암호화 저장)',
     };
+  }
+
+  /** @deprecated alias — prefer revealSetupOnce */
+  getOrCreateSetup(userId: string, email: string) {
+    return this.revealSetupOnce(userId, email);
   }
 
   async verify(userId: string, token: string): Promise<boolean> {

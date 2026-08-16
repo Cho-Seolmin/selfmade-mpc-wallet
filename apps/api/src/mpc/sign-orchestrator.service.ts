@@ -42,6 +42,16 @@ function createId(): string {
   return `s${randomBytes(16).toString('hex')}`;
 }
 
+type UnsignedTxFields = {
+  to: string;
+  value: string;
+  nonce: number;
+  gasLimit: string;
+  maxFeePerGas: string;
+  maxPriorityFeePerGas: string;
+  chainId: string;
+};
+
 type SignSessionState = {
   sessionId: string;
   userId: string;
@@ -52,15 +62,7 @@ type SignSessionState = {
   msg2B?: MpcWireMessage[];
   msg3B?: MpcWireMessage[];
   digestB64: string;
-  tx: {
-    to: string;
-    value: string;
-    nonce: number;
-    gasLimit: string;
-    maxFeePerGas: string;
-    maxPriorityFeePerGas: string;
-    chainId: string;
-  };
+  tx: UnsignedTxFields;
   address: string;
   step: 'WAIT_MSG1A' | 'WAIT_MSG2A' | 'WAIT_MSG3A' | 'WAIT_MSG4A' | 'DONE';
   createdAt: number;
@@ -84,6 +86,8 @@ type StartResult = {
   feeWei: string;
   toAddress: string;
   fromAddress: string;
+  /** Unsigned EIP-1559 fields for browser WYSIWYS digest recompute. */
+  tx: UnsignedTxFields;
   reused?: boolean;
 };
 
@@ -356,6 +360,7 @@ export class SignOrchestratorService {
         feeWei: prepared.feeWei.toString(),
         toAddress,
         fromAddress: wallet.address,
+        tx: state.tx,
       };
     } catch (err) {
       if (
@@ -649,6 +654,7 @@ export class SignOrchestratorService {
       feeWei: meta.feeWei,
       toAddress,
       fromAddress: meta.fromAddress,
+      tx: live.tx,
       reused: true,
     };
   }

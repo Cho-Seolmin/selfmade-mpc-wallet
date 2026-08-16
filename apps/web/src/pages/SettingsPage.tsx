@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getMe, changePassword, getTotpSetup } from "../api/auth";
+import { getMe, changePassword, getTotpSetup, getTotpStatus } from "../api/auth";
 import { getPreferences, updatePreferences } from "../api/settings";
 import { getSystemStatus } from "../api/system";
 import type { Me, TotpSetup } from "../types/auth";
@@ -110,6 +110,7 @@ export default function SettingsPage() {
   const [totpLoading, setTotpLoading] = useState(false);
   const [totpVisibleUntil, setTotpVisibleUntil] = useState<number | null>(null);
   const [totpRemainingSec, setTotpRemainingSec] = useState(0);
+  const [totpAlreadyRevealed, setTotpAlreadyRevealed] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -123,6 +124,13 @@ export default function SettingsPage() {
         setMe(meData);
         setPreferences(prefData);
         setStatus(statusData);
+
+        try {
+          const totpStatus = await getTotpStatus();
+          setTotpAlreadyRevealed(totpStatus.alreadyRevealed);
+        } catch {
+          // status optional — reveal button still works
+        }
       } catch (err: any) {
         setError(err?.response?.data?.message || "설정 정보 조회 실패");
       } finally {
@@ -145,6 +153,7 @@ export default function SettingsPage() {
         setTotpSetup(null);
         setTotpVisibleUntil(null);
         setTotpRemainingSec(0);
+        setTotpAlreadyRevealed(true);
         return;
       }
       setTotpRemainingSec(Math.ceil(leftMs / 1000));
@@ -160,6 +169,7 @@ export default function SettingsPage() {
     setTotpVisibleUntil(null);
     setTotpRemainingSec(0);
     setTotpError("");
+    setTotpAlreadyRevealed(true);
   };
 
   const revealTotpSetup = async () => {
@@ -169,8 +179,26 @@ export default function SettingsPage() {
       const totp = await getTotpSetup();
       setTotpSetup(totp);
       setTotpVisibleUntil(Date.now() + TOTP_REVEAL_MS);
-    } catch {
-      setTotpError("OTP 설정 정보를 불러오지 못했습니다.");
+      setTotpAlreadyRevealed(false);
+    } catch (err: any) {
+      const data = err?.response?.data;
+      const code = typeof data?.code === "string" ? data.code : undefined;
+      const already =
+        err?.response?.status === 410 || code === "TOTP_SECRET_ALREADY_REVEALED";
+      if (already) {
+        setTotpAlreadyRevealed(true);
+        setTotpError(
+          typeof data?.message === "string"
+            ? data.message
+            : "OTP secret은 이미 1회 표시되었습니다. 재조회할 수 없습니다.",
+        );
+      } else {
+        setTotpError(
+          typeof data?.message === "string"
+            ? data.message
+            : "OTP 설정 정보를 불러오지 못했습니다.",
+        );
+      }
       setTotpSetup(null);
       setTotpVisibleUntil(null);
     } finally {
@@ -310,14 +338,20 @@ export default function SettingsPage() {
               <span className="badge badge--success">계정별 OTP</span>
             </div>
             <p style={{ fontSize: "13px", color: "var(--color-text-muted)", marginBottom: "14px" }}>
-              Google Authenticator 등록용 secret은 버튼을 누른 뒤 10분만 표시됩니다. 그 후에는 다시 숨겨집니다.
+              OTP secret은 서버에서 1회만 내려줍니다. 표시 후 최대 10분 안에 Authenticator에
+              등록하세요. 숨기거나 시간이 지나면 재조회할 수 없습니다.
             </p>
             {totpError && (
               <div className="alert alert--danger" style={{ marginBottom: "14px" }}>
                 {totpError}
               </div>
             )}
-            {!totpSetup && (
+            {!totpSetup && totpAlreadyRevealed && (
+              <div className="alert alert--info" style={{ marginBottom: "14px" }}>
+                Secret은 이미 1회 표시되었습니다. Authenticator에 등록된 6자리 코드로 비상 복구를 진행하세요.
+              </div>
+            )}
+            {!totpSetup && !totpAlreadyRevealed && (
               <button
                 type="button"
                 className="btn btn--secondary"
@@ -325,7 +359,7 @@ export default function SettingsPage() {
                 disabled={totpLoading}
                 style={{ marginBottom: "14px" }}
               >
-                {totpLoading ? "불러오는 중..." : "OTP secret 보기 (10분)"}
+                {totpLoading ? "불러오는 중..." : "OTP secret 보기 (1회 · 10분)"}
               </button>
             )}
             {totpSetup && (
@@ -342,7 +376,7 @@ export default function SettingsPage() {
                 >
                   <span style={{ fontSize: "12px", color: "var(--color-text-muted)" }}>
                     남은 표시 시간 {Math.floor(totpRemainingSec / 60)}:
-                    {String(totpRemainingSec % 60).padStart(2, "0")}
+                    {String(totpRemainingSec % 60).padStart(2, "0")} (이후 재조회 불가)
                   </span>
                   <button type="button" className="btn btn--secondary" onClick={hideTotpSetup}>
                     지금 숨기기
@@ -363,6 +397,7 @@ export default function SettingsPage() {
                 <div className="settings-row__label">비상 복구 OTP</div>
                 <div className="settings-row__desc">
                   계정마다 랜덤 TOTP secret을 발급하고, 서버에는 TOTP_ENCRYPTION_KEY로 암호화해 저장합니다.
+                  평문 secret 재조회는 1회로 제한됩니다.
                 </div>
               </div>
               <Switch checked={Boolean(status?.otpConfigured)} onChange={() => {}} disabled />
