@@ -16,7 +16,7 @@ import {
 } from "../../api/wallet";
 import { loadBrowserShareABytes } from "./browser-share-store";
 import { Keyshare, Message, SignSession, ensureMpcWasm } from "./index";
-import { assertWysiwysDigest } from "./wysiwys";
+import { assertWysiwysDigest, type WithdrawAsset } from "./wysiwys";
 
 export type WithdrawAbResult = {
   withdraw: {
@@ -38,6 +38,10 @@ export async function withdrawViaAbSigning(params: {
   walletId: string;
   toAddress: string;
   amount: string;
+  asset?: WithdrawAsset;
+  tokenAddress?: string;
+  /** Expected calldata. Native ETH defaults to `0x`. */
+  userData?: string;
 }): Promise<WithdrawAbResult> {
   await ensureMpcWasm();
 
@@ -57,9 +61,17 @@ export async function withdrawViaAbSigning(params: {
       walletId: params.walletId,
       toAddress: params.toAddress,
       amount: params.amount,
+      asset: params.asset,
       idempotencyKey,
     });
     sessionId = started.sessionId;
+
+    if (started.alreadyBroadcast) {
+      return {
+        withdraw: started.withdraw,
+        message: started.message,
+      };
+    }
 
     if (!started.tx) {
       throw new Error(
@@ -73,6 +85,9 @@ export async function withdrawViaAbSigning(params: {
       digestB64: started.digestB64,
       amountWei: started.amountWei,
       tx: started.tx,
+      userData: params.userData ?? "0x",
+      asset: params.asset,
+      tokenAddress: params.tokenAddress,
     });
 
     const keyshareA = Keyshare.fromBytes(shareABytes);

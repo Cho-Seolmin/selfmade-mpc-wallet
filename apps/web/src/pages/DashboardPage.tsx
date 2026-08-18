@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { formatEther } from "ethers";
+import { formatEther, formatUnits } from "ethers";
 import { getMe } from "../api/auth";
 import {
   cancelEmergencyRecovery,
@@ -33,7 +33,7 @@ import {
   walletStatusHint,
 } from "../lib/wallet-ui";
 import type { Me } from "../types/auth";
-import type { Wallet, WithdrawItem } from "../types/wallet";
+import type { TokenBalance, Wallet, WithdrawItem } from "../types/wallet";
 import "../styles/page.css";
 
 export default function DashboardPage() {
@@ -41,6 +41,10 @@ export default function DashboardPage() {
   const [wallet, setWallet] = useState<Wallet | null>(null);
   const [latestRetired, setLatestRetired] = useState<Wallet | null>(null);
   const [balanceEth, setBalanceEth] = useState<string>("0");
+  const [tokenBalanceLabel, setTokenBalanceLabel] = useState<string | null>(
+    null,
+  );
+  const [tokenInfo, setTokenInfo] = useState<TokenBalance | null>(null);
   const [hasShareA, setHasShareA] = useState(false);
   const [withdraws, setWithdraws] = useState<WithdrawItem[]>([]);
   const [audits, setAudits] = useState<AuditLogItem[]>([]);
@@ -83,8 +87,20 @@ export default function DashboardPage() {
       try {
         const bal = await getWalletBalance(current.id);
         setBalanceEth(formatEther(bal.balanceWei ?? "0"));
+        const token = Array.isArray(bal.tokens) ? bal.tokens[0] : undefined;
+        if (token) {
+          setTokenInfo(token);
+          setTokenBalanceLabel(
+            `${formatUnits(token.balanceRaw ?? "0", token.decimals ?? 18)} ${token.symbol || "TTK"}`,
+          );
+        } else {
+          setTokenInfo(null);
+          setTokenBalanceLabel(null);
+        }
       } catch {
         setBalanceEth("0");
+        setTokenInfo(null);
+        setTokenBalanceLabel(null);
       }
       try {
         setHasShareA(await hasBrowserShareA(current.id));
@@ -94,6 +110,8 @@ export default function DashboardPage() {
       await loadActivity(current.id);
     } else {
       setBalanceEth("0");
+      setTokenInfo(null);
+      setTokenBalanceLabel(null);
       setHasShareA(false);
       if (retiredLatest) {
         await loadActivity(retiredLatest.id);
@@ -267,7 +285,11 @@ export default function DashboardPage() {
     setWithdrawModalOpen(true);
   };
 
-  const onWithdraw = async (params: { toAddress: string; amount: string }) => {
+  const onWithdraw = async (params: {
+    toAddress: string;
+    amount: string;
+    asset: "ETH" | "ERC20";
+  }) => {
     if (!wallet) return;
     setError("");
     setCreateHint("");
@@ -277,6 +299,9 @@ export default function DashboardPage() {
         walletId: wallet.id,
         toAddress: params.toAddress,
         amount: params.amount,
+        asset: params.asset,
+        tokenAddress:
+          params.asset === "ERC20" ? tokenInfo?.address : undefined,
       });
       setWithdrawModalOpen(false);
       const txHint = result.withdraw.txHash
@@ -346,6 +371,7 @@ export default function DashboardPage() {
         busy={lastWithdrawBusy}
         walletAddress={wallet?.address ?? ""}
         balanceEth={balanceEth}
+        token={tokenInfo}
         onCancel={() => {
           if (!lastWithdrawBusy) setLastWithdrawModalOpen(false);
         }}
@@ -357,6 +383,7 @@ export default function DashboardPage() {
         hasShareA={hasShareA}
         walletAddress={wallet?.address ?? ""}
         balanceEth={balanceEth}
+        token={tokenInfo}
         onCancel={() => {
           if (!withdrawBusy) setWithdrawModalOpen(false);
         }}
@@ -600,6 +627,18 @@ export default function DashboardPage() {
                 }}
               >
                 {balanceEth} ETH
+                {tokenBalanceLabel && (
+                  <div
+                    style={{
+                      fontSize: "16px",
+                      fontWeight: 600,
+                      color: "var(--color-text-muted)",
+                      marginTop: "4px",
+                    }}
+                  >
+                    {tokenBalanceLabel}
+                  </div>
+                )}
               </div>
             </div>
 

@@ -33,6 +33,7 @@ apps/
   recovery/     # NestJS + SQLite (Share C 전용, 브라우저에서 직접 호출 금지)
 packages/
   mpc-crypto/   # DKG / threshold sign / ETH 주소·서명 헬퍼
+test-token/     # Sepolia TestToken(TTK) Hardhat 배포·민팅 (지갑 런타임과 분리)
 ```
 
 | 서비스 | 포트 | 설명 |
@@ -67,15 +68,16 @@ packages/
 ### 4. 일반 출금 (A+B)
 - ACTIVE 지갑 + Browser Share A 필요
 - 브라우저(A) ↔ API(B) 서명 라운드 후 Sepolia에 **signed raw** broadcast
-- `Idempotency-Key` 필수 · 지갑당 진행 중 서명 세션 1개 · `EXECUTED` 재요청 시 기존 txHash 반환
+- `Idempotency-Key` 필수 · 지갑당 진행 중 서명 세션 1개 · `BROADCASTED`/`EXECUTED` 재요청 시 기존 txHash 반환 (재서명·재broadcast 없음)
+- 진행 중 A+B(`PROCESSING`/`BROADCASTED`)와 비상 B+C·새 일반 출금은 동시에 진행하지 않음. `BROADCASTED`는 다음 요청 시 receipt를 한 번 확인(성공=`EXECUTED`, 실패=`FAILED`, 미확정=`409 TRANSACTION_PENDING`)
+- 부분 금액 출금, Share B 유지, 지갑 상태 ACTIVE 유지 (TTK는 아래 TestToken)
 - **WYSIWYS:** `sign/start`의 unsigned `tx`로 브라우저가 digest를 재계산·대조한 뒤 서명 (불일치 시 abort)
-- 부분 금액 출금, Share B 유지, 지갑 상태 ACTIVE 유지
 - Share A 없음 / 잔액 초과 시 UI 경고
 
 ### 5. 비상 복구 (OTP + B+C)
 1. Google OTP 인증 → `RECOVERY_PENDING`
 2. 수신 주소 + OTP 재확인 → B+C threshold 서명 (**Share C는 Recovery 밖으로 나오지 않음**, wire message만 교환)
-3. **잔액 전액** 출금 (부분 출금 불가) 후 `RETIRED` — broadcast도 signed raw만 사용
+3. **잔액 전액** 출금 (부분 출금 불가) 후 `RETIRED` — broadcast도 signed raw만 사용. (TTK가 있으면 토큰을 먼저 보낸 뒤 ETH. 세부 정책은 아래 TestToken)
 4. Share B 삭제, Share C retire, 이후 새 MPC 지갑 생성 가능
 
 ### 6. 지갑 수명주기
@@ -92,6 +94,15 @@ packages/
 (민감 필드는 allow-list 키만 audit `data`에 남김)
 
 Dashboard: 상태·잔액·Share A 유무, 출금/감사 로그(5개 단위 페이지네이션)
+
+### 8. TestToken (TTK)
+
+Sepolia 학습용 ERC-20 (`TTK`, 18 decimals). 배포·추가 민팅은 `test-token/` (Hardhat)에서 하며, 메인 지갑 프로세스와 분리되어 있습니다.
+
+- API `SEPOLIA_TEST_TOKEN_ADDRESS`가 있으면 `GET /wallets/:id/balance`가 ETH와 함께 `tokens[]`를 반환하고, Dashboard·일반 출금·비상 출금에 TTK가 붙습니다. 미설정이면 ETH만 동작합니다.
+- 잔액·출금 기준은 **MPC 온체인 주소**입니다. 배포 EOA로 민팅된 TTK는 MPC 주소로 보낸 뒤에야 지갑에 보입니다.
+- **일반 출금 (A+B):** `asset=ETH|ERC20`. TTK는 `to=토큰 컨트랙트`, `value=0`, `data=transfer(수신주소,금액)`이고 가스는 ETH에서 냅니다. 금액 문자열 `"1"`은 1 TTK입니다. WYSIWYS가 이 calldata와 Sepolia `chainId`까지 재계산합니다.
+- **비상 출금 (B+C):** TTK 전액 → ETH 전액 순. 단계마다 로컬 txHash·signed raw를 `BROADCASTED`로 저장한 뒤 RPC (재서명·다른 nonce 재broadcast 없음). TTK가 미확정이면 ETH로 넘어가지 않습니다. TTK가 남아 있는데 가스용 ETH가 부족하면 `INSUFFICIENT_GAS`로 중단하고 **`RETIRED`하지 않습니다** — MPC 주소로 소량 Sepolia ETH를 입금한 뒤 다시 시도합니다.
 
 ---
 
@@ -188,6 +199,7 @@ cd ../recovery && npx prisma db push && npx prisma generate
 | `TOTP_ENCRYPTION_KEY` | 계정별 TOTP secret AES-256 키 (64 hex, JWT와 분리) |
 | `FRONTEND_URL` | CORS (예: `http://localhost:5173`) |
 | `SEPOLIA_RPC_URL` | Sepolia RPC — 잔액 조회·signed raw broadcast (`BACKEND_SIGNER_*` 불필요) |
+| `SEPOLIA_TEST_TOKEN_ADDRESS` | Sepolia TestToken(TTK) 컨트랙트. 잔액 표시·A+B ERC-20 출금·비상 TTK sweep (미설정 시 ETH만) |
 | `WALLET_ENCRYPTION_KEY` | Share B AES-256 키 (64 hex) |
 | `RECOVERY_BASE_URL` | `http://localhost:3001` |
 | `RECOVERY_SERVICE_TOKEN` | Recovery와 동일한 서비스 토큰 |
@@ -221,7 +233,8 @@ npm run dev:api        # :3000
 npm run dev:web        # :5173
 ```
 
-브라우저에서 회원가입 → Settings에 OTP 등록 → Dashboard에서 **Create MPC Wallet**.
+브라우저에서 회원가입 → Settings에 OTP 등록 → Dashboard에서 **Create MPC Wallet**.  
+TTK를 쓰려면 배포/민팅 후 **MPC 지갑 주소**로 토큰을 보내고, API에 `SEPOLIA_TEST_TOKEN_ADDRESS`를 넣습니다. (`test-token/README.md`)
 
 ---
 
@@ -238,7 +251,7 @@ npm run dev:web        # :5173
 | `POST` | `/wallets/:id/emergency/last-withdraw` | B+C 전액 출금 → `RETIRED` |
 | `GET` | `/wallets` | Live 지갑 목록 |
 | `GET` | `/wallets/retired` | 폐기 지갑 메타 |
-| `GET` | `/wallets/:id/balance` | 잔액 (RETIRED 거부) |
+| `GET` | `/wallets/:id/balance` | ETH + 설정된 ERC-20 잔액 (RETIRED 거부) |
 | `GET` | `/wallets/:id/withdraws` | 출금 이력 |
 | `GET` | `/wallets/:id/audits` | 감사 로그 |
 | `POST` | `/wallets/:id/audit-events` | 브라우저 비민감 이벤트 보고 |
@@ -281,7 +294,7 @@ npm run test:integration
 ## 보안 메모 (데모 기준)
 
 - Share / PIN은 로그·일반 API 응답에 넣지 않음. OTP 평문 secret은 `/auth/totp-setup` **1회 reveal만** (이후 410)
-- A+B 출금 WYSIWYS: 브라우저가 unsigned `tx`로 digest 재검증 후 서명
+- A+B 출금 WYSIWYS: 브라우저가 unsigned `tx`로 digest 재검증 후 서명 (ERC-20 calldata는 TestToken 절)
 - Recovery는 브라우저에서 호출하지 않음 (API ↔ Recovery만)
 - Recovery File PIN은 PBKDF2-SHA256(210k) → AES-GCM
 - Share B / Share C 암호화 키 분리
@@ -289,6 +302,7 @@ npm run test:integration
 - API에 `BACKEND_SIGNER_PRIVATE_KEY` 없음 — 체인 I/O는 `RpcProviderService`만
 - `RETIRED` 이후 해당 지갑 재서명 불가
 - OTP 연속 실패 시 짧은 잠금 (인메모리)
+- 진행 중 A+B와 비상 B+C는 상호 배제 (지갑 row lock)
 
 ---
 

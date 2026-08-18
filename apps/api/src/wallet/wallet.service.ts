@@ -12,6 +12,7 @@ import {
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RpcProviderService } from './rpc-provider.service';
+import { readConfiguredErc20Balances } from './erc20-balance';
 import {
   assertWalletNotRetired,
   LIVE_WALLET_STATUSES,
@@ -212,9 +213,9 @@ export class WalletService {
   async getBalance(userId: string, walletId: string) {
     const wallet = await this.getOwnedMpcWallet(userId, walletId);
 
-    const balanceWei = await this.rpcProvider
-      .getProvider()
-      .getBalance(wallet.address);
+    const provider = this.rpcProvider.getProvider();
+    const balanceWei = await provider.getBalance(wallet.address);
+    const tokens = await readConfiguredErc20Balances(provider, wallet.address);
 
     return {
       walletId: wallet.id,
@@ -222,6 +223,7 @@ export class WalletService {
       balanceWei: balanceWei.toString(),
       source: 'MPC',
       status: wallet.status,
+      tokens,
     };
   }
 
@@ -251,6 +253,7 @@ export class WalletService {
       | 'APPROVED'
       | 'QUEUED'
       | 'PROCESSING'
+      | 'BROADCASTED'
       | 'EXECUTED'
       | 'REJECTED'
       | 'FAILED'
@@ -260,7 +263,7 @@ export class WalletService {
       allowRetired: true,
     });
 
-    return this.prisma.withdrawRequest.findMany({
+    const rows = await this.prisma.withdrawRequest.findMany({
       where: {
         walletId: wallet.id,
         ...(status ? { status } : {}),
@@ -275,8 +278,20 @@ export class WalletService {
         txHash: true,
         createdAt: true,
         executionType: true,
+        metadata: true,
       },
     });
+
+    return rows.map(({ metadata, ...rest }) => ({
+      ...rest,
+      asset:
+        metadata &&
+        typeof metadata === 'object' &&
+        !Array.isArray(metadata) &&
+        (metadata as { asset?: unknown }).asset === 'ERC20'
+          ? ('ERC20' as const)
+          : ('ETH' as const),
+    }));
   }
 
   /**

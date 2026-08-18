@@ -11,6 +11,8 @@ describe('TotpService one-time reveal', () => {
       findUnique: jest.Mock;
       update: jest.Mock;
     };
+    $queryRaw: jest.Mock;
+    $transaction: jest.Mock;
   };
   let service: TotpService;
 
@@ -21,6 +23,10 @@ describe('TotpService one-time reveal', () => {
         findUnique: jest.fn(),
         update: jest.fn().mockResolvedValue({}),
       },
+      $queryRaw: jest.fn().mockResolvedValue([{ id: userId }]),
+      $transaction: jest.fn(async (fn: (tx: typeof prisma) => unknown) =>
+        fn(prisma),
+      ),
     };
     service = new TotpService(prisma as any);
   });
@@ -81,10 +87,28 @@ describe('TotpService one-time reveal', () => {
     const revealed = await service.revealSetupOnce(userId, 'a@b.com');
     expect(revealed.secret).toBe(secret);
     expect(revealed.created).toBe(false);
+    expect(prisma.$queryRaw).toHaveBeenCalled();
     expect(prisma.user.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: { totpSecretRevealedAt: expect.any(Date) },
       }),
+    );
+  });
+
+  it('locks the user row before reveal so concurrent calls serialize', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: userId,
+      email: 'a@b.com',
+      encryptedTotpSecret: null,
+      totpSecretRevealedAt: null,
+    });
+
+    await service.revealSetupOnce(userId, 'a@b.com');
+
+    expect(prisma.$transaction).toHaveBeenCalled();
+    expect(prisma.$queryRaw).toHaveBeenCalled();
+    expect(JSON.stringify(prisma.$queryRaw.mock.calls[0])).toMatch(
+      /FOR UPDATE/i,
     );
   });
 });

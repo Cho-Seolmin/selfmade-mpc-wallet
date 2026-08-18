@@ -14,6 +14,7 @@ import {
 } from '@selfmade/mpc-crypto';
 import { AuditService } from '../audit/audit.service';
 import { encryptShareB } from '../common/crypto/share-b-encryption';
+import { MpcErrorCode } from '../common/errors/mpc-error-codes';
 import { PrismaService } from '../prisma/prisma.service';
 import { RpcProviderService } from '../wallet/rpc-provider.service';
 import { SignOrchestratorService } from './sign-orchestrator.service';
@@ -34,6 +35,21 @@ jest.mock('./eth-transfer', () => {
     maxPriorityFeePerGas: 1n,
     chainId: 11155111,
   });
+  const token = '0xc3CF22f1a32f360B685C56Da48481007d580cDb4';
+  const erc20Tx = Transaction.from({
+    type: 2,
+    to: token,
+    value: 0n,
+    nonce: 0,
+    gasLimit: 100000n,
+    maxFeePerGas: 1n,
+    maxPriorityFeePerGas: 1n,
+    chainId: 11155111,
+    data: actual.encodeErc20Transfer(
+      '0x2222222222222222222222222222222222222222',
+      10n ** 15n,
+    ),
+  });
   return {
     ...actual,
     prepareAmountTransfer: jest.fn(async () => ({
@@ -42,9 +58,15 @@ jest.mock('./eth-transfer', () => {
       feeWei: 21000n,
       valueWei: 10n ** 15n,
     })),
-    unsignedTxDigest32: jest.fn(() => {
+    prepareErc20AmountTransfer: jest.fn(async () => ({
+      tx: erc20Tx,
+      balanceWei: 10n ** 18n,
+      feeWei: 100000n,
+      valueWei: 0n,
+    })),
+    unsignedTxDigest32: jest.fn((inputTx?: Transaction) => {
       try {
-        return getBytes(tx.unsignedHash);
+        return getBytes((inputTx ?? tx).unsignedHash);
       } catch {
         return digest;
       }
@@ -60,6 +82,9 @@ describe('SignOrchestratorService A+B rounds', () => {
   let encryptedShareB: string;
   let address: string;
   let withdrawStore: Map<string, any>;
+  let broadcastTransaction: jest.Mock;
+  let waitReceipt: jest.Mock;
+  let getTransactionReceipt: jest.Mock;
 
   beforeAll(() => {
     if (!process.env.WALLET_ENCRYPTION_KEY) {
@@ -104,10 +129,44 @@ describe('SignOrchestratorService A+B rounds', () => {
           if (where.id) return withdrawStore.get(where.id) ?? null;
           return null;
         }),
+        findFirst: jest.fn(async ({ where }: any) => {
+          return (
+            [...withdrawStore.values()].find((row) => {
+              if (where.wallet?.userId && row.userId !== where.wallet.userId) {
+                return false;
+              }
+              if (where.status?.in && !where.status.in.includes(row.status)) {
+                return false;
+              }
+              if (
+                typeof where.status === 'string' &&
+                row.status !== where.status
+              ) {
+                return false;
+              }
+              if (where.metadata?.path && where.metadata.equals !== undefined) {
+                let cur: any = row.metadata;
+                for (const key of where.metadata.path) {
+                  cur = cur?.[key];
+                }
+                if (cur !== where.metadata.equals) return false;
+              }
+              return true;
+            }) ?? null
+          );
+        }),
         findMany: jest.fn(async ({ where }: any) => {
           return [...withdrawStore.values()].filter((row) => {
             if (where.walletId && row.walletId !== where.walletId) return false;
-            if (where.status && row.status !== where.status) return false;
+            if (where.status?.in && !where.status.in.includes(row.status)) {
+              return false;
+            }
+            if (
+              typeof where.status === 'string' &&
+              row.status !== where.status
+            ) {
+              return false;
+            }
             if (where.wallet?.userId && row.userId !== where.wallet.userId) {
               return false;
             }
@@ -143,12 +202,16 @@ describe('SignOrchestratorService A+B rounds', () => {
       $transaction: jest.fn(async (fn: any) => fn(prisma)),
     };
 
+    waitReceipt = jest.fn().mockResolvedValue({});
+    broadcastTransaction = jest.fn().mockResolvedValue({
+      hash: '0xabctx',
+      wait: waitReceipt,
+    });
+    getTransactionReceipt = jest.fn().mockResolvedValue(null);
     const rpc = {
       getProvider: jest.fn().mockReturnValue({
-        broadcastTransaction: jest.fn().mockResolvedValue({
-          hash: '0xabctx',
-          wait: jest.fn().mockResolvedValue({}),
-        }),
+        broadcastTransaction,
+        getTransactionReceipt,
       }),
     };
 
@@ -260,6 +323,9 @@ describe('SignOrchestratorService A+B rounds', () => {
       '0.001',
       'complete-key',
     );
+    if (started.alreadyBroadcast) {
+      throw new Error('expected a signing session');
+    }
 
     const keyshareA = Keyshare.fromBytes(shareABytes);
     const sessionA = new SignSession(keyshareA, MPC_CHAIN_PATH);
@@ -299,10 +365,269 @@ describe('SignOrchestratorService A+B rounds', () => {
 
       expect(done.withdraw.status).toBe('EXECUTED');
       expect(done.withdraw.txHash).toBe('0xabctx');
+      expect(broadcastTransaction).toHaveBeenCalledTimes(1);
 
       const retried = await service.complete('u1', started.sessionId, msg4A);
+      expect(retried.withdraw.status).toBe('EXECUTED');
       expect(retried.withdraw.txHash).toBe('0xabctx');
       expect(retried.message).toContain('이미 완료');
+      expect(broadcastTransaction).toHaveBeenCalledTimes(1);
+      expect(waitReceipt).toHaveBeenCalledTimes(1);
+    } finally {
+      sessionA.free();
+    }
+  });
+
+  it('keeps BROADCASTED after wait failure and does not rebroadcast on retry', async () => {
+    waitReceipt.mockRejectedValueOnce(new Error('receipt timeout'));
+
+    const started = await service.start(
+      'u1',
+      'w1',
+      '0x2222222222222222222222222222222222222222',
+      '0.001',
+      'broadcast-key',
+    );
+    if (started.alreadyBroadcast) {
+      throw new Error('expected a signing session');
+    }
+
+    const keyshareA = Keyshare.fromBytes(shareABytes);
+    const sessionA = new SignSession(keyshareA, MPC_CHAIN_PATH);
+    try {
+      const msg1A = encodeWireMessages([sessionA.createFirstMessage()]);
+      const msg1All = decodeWireMessages(Message, [
+        started.msg1B,
+        ...msg1A,
+      ]);
+      const msg2A = encodeWireMessages(
+        sessionA.handleMessages(filterMessages(msg1All, MPC_PARTY.A)),
+      );
+
+      const r1 = await service.round1('u1', started.sessionId, msg1A);
+      const msg3A = encodeWireMessages(
+        sessionA.handleMessages(
+          selectMessages(
+            decodeWireMessages(Message, [...msg2A, ...r1.messagesForA]),
+            MPC_PARTY.A,
+          ),
+        ),
+      );
+
+      const r2 = await service.round2('u1', started.sessionId, msg2A);
+      sessionA.handleMessages(
+        selectMessages(
+          decodeWireMessages(Message, [...msg3A, ...r2.messagesForA]),
+          MPC_PARTY.A,
+        ),
+      );
+
+      await service.round3('u1', started.sessionId, msg3A);
+
+      const digest = base64ToBytes(started.digestB64);
+      const msg4A = encodeWireMessages([sessionA.lastMessage(digest)]);
+      const done = await service.complete('u1', started.sessionId, msg4A);
+
+      expect(done.withdraw.status).toBe('BROADCASTED');
+      expect(done.withdraw.txHash).toBe('0xabctx');
+      expect(broadcastTransaction).toHaveBeenCalledTimes(1);
+
+      const retried = await service.complete('u1', started.sessionId, msg4A);
+      expect(retried.withdraw.status).toBe('BROADCASTED');
+      expect(retried.withdraw.txHash).toBe('0xabctx');
+      expect(retried.message).toContain('이미 브로드캐스트');
+      expect(broadcastTransaction).toHaveBeenCalledTimes(1);
+      expect(waitReceipt).toHaveBeenCalledTimes(1);
+
+      const reusedStart = await service.start(
+        'u1',
+        'w1',
+        '0x2222222222222222222222222222222222222222',
+        '0.001',
+        'broadcast-key',
+      );
+      expect(reusedStart.alreadyBroadcast).toBe(true);
+      if (reusedStart.alreadyBroadcast) {
+        expect(reusedStart.withdraw.txHash).toBe('0xabctx');
+        expect(reusedStart.withdraw.status).toBe('BROADCASTED');
+      }
+
+      const nextPending = service.start(
+        'u1',
+        'w1',
+        '0x2222222222222222222222222222222222222222',
+        '0.002',
+        'next-key',
+      );
+      await expect(nextPending).rejects.toMatchObject({
+        response: { code: MpcErrorCode.TRANSACTION_PENDING },
+      });
+      expect(withdrawStore.size).toBe(1);
+    } finally {
+      sessionA.free();
+    }
+  });
+
+  it('starts a new withdraw after BROADCASTED receipt confirms', async () => {
+    withdrawStore.set('wr-old', {
+      id: 'wr-old',
+      walletId: 'w1',
+      userId: 'u1',
+      status: 'BROADCASTED',
+      txHash: '0xabctx',
+      idempotencyKey: 'old-key',
+      amount: '1000000000000000',
+      toAddress: '0x2222222222222222222222222222222222222222',
+      metadata: { mode: 'NORMAL_AB', sessionId: 's-old' },
+      createdAt: new Date(),
+    });
+    getTransactionReceipt.mockResolvedValue({ status: 1 });
+
+    const next = await service.start(
+      'u1',
+      'w1',
+      '0x2222222222222222222222222222222222222222',
+      '0.002',
+      'next-key',
+    );
+
+    expect(next.alreadyBroadcast).toBeFalsy();
+    expect(withdrawStore.get('wr-old').status).toBe('EXECUTED');
+    expect(withdrawStore.size).toBe(2);
+  });
+
+  it('starts a new withdraw after BROADCASTED receipt reverts', async () => {
+    withdrawStore.set('wr-old', {
+      id: 'wr-old',
+      walletId: 'w1',
+      userId: 'u1',
+      status: 'BROADCASTED',
+      txHash: '0xabctx',
+      idempotencyKey: 'old-key',
+      amount: '1000000000000000',
+      toAddress: '0x2222222222222222222222222222222222222222',
+      metadata: { mode: 'NORMAL_AB', sessionId: 's-old' },
+      createdAt: new Date(),
+    });
+    getTransactionReceipt.mockResolvedValue({ status: 0 });
+
+    const next = await service.start(
+      'u1',
+      'w1',
+      '0x2222222222222222222222222222222222222222',
+      '0.002',
+      'next-key',
+    );
+
+    expect(next.alreadyBroadcast).toBeFalsy();
+    expect(withdrawStore.get('wr-old').status).toBe('FAILED');
+    expect(withdrawStore.size).toBe(2);
+  });
+
+  it('starts ERC-20 withdraw against the configured token contract', async () => {
+    process.env.SEPOLIA_TEST_TOKEN_ADDRESS =
+      '0xc3CF22f1a32f360B685C56Da48481007d580cDb4';
+    const started = await service.start(
+      'u1',
+      'w1',
+      '0x2222222222222222222222222222222222222222',
+      '0.001',
+      'erc20-key',
+      'ERC20',
+    );
+    if (started.alreadyBroadcast) {
+      throw new Error('expected a signing session');
+    }
+    expect(started.tx.to.toLowerCase()).toBe(
+      '0xc3cf22f1a32f360b685c56da48481007d580cdb4',
+    );
+    expect(started.tx.value).toBe('0');
+    expect(started.tx.data.toLowerCase()).toMatch(/^0xa9059cbb/);
+  });
+
+  it('rejects sign/start when wallet leaves ACTIVE under the lock', async () => {
+    prisma.wallet.findUnique
+      .mockResolvedValueOnce({
+        id: 'w1',
+        userId: 'u1',
+        walletType: 'MPC',
+        status: WalletStatus.ACTIVE,
+        address,
+        encryptedShareB,
+      })
+      .mockResolvedValueOnce({
+        id: 'w1',
+        status: WalletStatus.RECOVERY_PENDING,
+      });
+
+    await expect(
+      service.start(
+        'u1',
+        'w1',
+        '0x2222222222222222222222222222222222222222',
+        '0.001',
+        'race-key',
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(withdrawStore.size).toBe(0);
+  });
+
+  it('does not broadcast A+B complete after wallet leaves ACTIVE', async () => {
+    const started = await service.start(
+      'u1',
+      'w1',
+      '0x2222222222222222222222222222222222222222',
+      '0.001',
+      'not-active-key',
+    );
+    if (started.alreadyBroadcast) {
+      throw new Error('expected a signing session');
+    }
+
+    const keyshareA = Keyshare.fromBytes(shareABytes);
+    const sessionA = new SignSession(keyshareA, MPC_CHAIN_PATH);
+    try {
+      const msg1A = encodeWireMessages([sessionA.createFirstMessage()]);
+      const msg1All = decodeWireMessages(Message, [
+        started.msg1B,
+        ...msg1A,
+      ]);
+      const msg2A = encodeWireMessages(
+        sessionA.handleMessages(filterMessages(msg1All, MPC_PARTY.A)),
+      );
+      const r1 = await service.round1('u1', started.sessionId, msg1A);
+      const msg3A = encodeWireMessages(
+        sessionA.handleMessages(
+          selectMessages(
+            decodeWireMessages(Message, [...msg2A, ...r1.messagesForA]),
+            MPC_PARTY.A,
+          ),
+        ),
+      );
+      const r2 = await service.round2('u1', started.sessionId, msg2A);
+      sessionA.handleMessages(
+        selectMessages(
+          decodeWireMessages(Message, [...msg3A, ...r2.messagesForA]),
+          MPC_PARTY.A,
+        ),
+      );
+      await service.round3('u1', started.sessionId, msg3A);
+
+      prisma.wallet.findUnique.mockResolvedValue({
+        id: 'w1',
+        userId: 'u1',
+        walletType: 'MPC',
+        status: WalletStatus.RECOVERY_PENDING,
+        address,
+        encryptedShareB,
+      });
+
+      const digest = base64ToBytes(started.digestB64);
+      const msg4A = encodeWireMessages([sessionA.lastMessage(digest)]);
+      await expect(
+        service.complete('u1', started.sessionId, msg4A),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(broadcastTransaction).not.toHaveBeenCalled();
     } finally {
       sessionA.free();
     }

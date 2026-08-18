@@ -118,11 +118,12 @@ export default function WalletActivityPanel({
                 <li key={w.id} className="activity-list__item">
                   <div className="activity-list__row">
                     <span className="activity-list__title">
-                      {formatEther(w.amount || "0")} ETH
+                      {formatEther(w.amount || "0")}{" "}
+                      {w.asset === "ERC20" ? "TTK" : "ETH"}
                     </span>
                     <span
                       className={`badge ${
-                        w.status === "EXECUTED"
+                        w.status === "EXECUTED" || w.status === "BROADCASTED"
                           ? "badge--success"
                           : w.status === "FAILED" || w.status === "REJECTED"
                             ? "badge--danger"

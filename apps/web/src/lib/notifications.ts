@@ -76,6 +76,7 @@ export function statusToCategory(
 ): NotificationCategory | null {
   switch (status) {
     case "EXECUTED":
+    case "BROADCASTED":
       return "WITHDRAW_COMPLETED";
     case "FAILED":
     case "REJECTED":

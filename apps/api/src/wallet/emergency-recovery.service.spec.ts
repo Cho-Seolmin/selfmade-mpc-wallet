@@ -6,15 +6,21 @@ import { WalletStatus } from '@prisma/client';
 import { EmergencyRecoveryService } from './emergency-recovery.service';
 import { AuditService } from '../audit/audit.service';
 import { TotpService } from '../auth/totp.service';
+import { MpcErrorCode } from '../common/errors/mpc-error-codes';
 import { PrismaService } from '../prisma/prisma.service';
+import { RpcProviderService } from './rpc-provider.service';
 
 describe('EmergencyRecoveryService', () => {
   let service: EmergencyRecoveryService;
   let prisma: {
     wallet: { findUnique: jest.Mock; update: jest.Mock };
+    withdrawRequest: { findMany: jest.Mock; update: jest.Mock };
     withdrawalAuditLog: { create: jest.Mock };
+    $queryRaw: jest.Mock;
+    $transaction: jest.Mock;
   };
   let totp: { verify: jest.Mock };
+  let getTransactionReceipt: jest.Mock;
 
   const baseWallet = {
     id: 'w1',
@@ -34,17 +40,30 @@ describe('EmergencyRecoveryService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
+      withdrawRequest: {
+        findMany: jest.fn().mockResolvedValue([]),
+        update: jest.fn().mockResolvedValue({}),
+      },
       withdrawalAuditLog: {
         create: jest.fn().mockResolvedValue({}),
       },
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'w1' }]),
+      $transaction: jest.fn(async (fn: (tx: typeof prisma) => unknown) =>
+        fn(prisma),
+      ),
     };
     totp = {
       verify: jest.fn(),
+    };
+    getTransactionReceipt = jest.fn().mockResolvedValue(null);
+    const rpc = {
+      getProvider: jest.fn().mockReturnValue({ getTransactionReceipt }),
     };
     service = new EmergencyRecoveryService(
       prisma as unknown as PrismaService,
       new AuditService(prisma as unknown as PrismaService),
       totp as unknown as TotpService,
+      rpc as unknown as RpcProviderService,
     );
     service.resetOtpFailuresForTests();
   });
@@ -101,6 +120,102 @@ describe('EmergencyRecoveryService', () => {
     totp.verify.mockResolvedValue(true);
 
     const result = await service.startEmergencyRecovery('u1', 'w1', '123456');
+    expect(result.wallet.status).toBe(WalletStatus.RECOVERY_PENDING);
+    expect(prisma.wallet.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects emergency start while A+B PROCESSING is open', async () => {
+    prisma.wallet.findUnique.mockResolvedValue(baseWallet);
+    totp.verify.mockResolvedValue(true);
+    prisma.withdrawRequest.findMany.mockResolvedValue([
+      {
+        id: 'wr1',
+        status: 'PROCESSING',
+        txHash: null,
+        metadata: { mode: 'NORMAL_AB', sessionId: 's1' },
+      },
+    ]);
+
+    await expect(
+      service.startEmergencyRecovery('u1', 'w1', '123456'),
+    ).rejects.toMatchObject({
+      response: { code: MpcErrorCode.SIGN_SESSION_BUSY },
+    });
+    expect(prisma.wallet.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects emergency start while A+B BROADCASTED has no receipt', async () => {
+    prisma.wallet.findUnique.mockResolvedValue(baseWallet);
+    totp.verify.mockResolvedValue(true);
+    prisma.withdrawRequest.findMany.mockResolvedValue([
+      {
+        id: 'wr1',
+        status: 'BROADCASTED',
+        txHash: '0xabctx',
+        metadata: { mode: 'NORMAL_AB' },
+      },
+    ]);
+    getTransactionReceipt.mockResolvedValue(null);
+
+    await expect(
+      service.startEmergencyRecovery('u1', 'w1', '123456'),
+    ).rejects.toMatchObject({
+      response: { code: MpcErrorCode.TRANSACTION_PENDING },
+    });
+    expect(prisma.wallet.update).not.toHaveBeenCalled();
+  });
+
+  it('settles successful BROADCASTED receipt then starts emergency', async () => {
+    prisma.wallet.findUnique.mockResolvedValue(baseWallet);
+    totp.verify.mockResolvedValue(true);
+    prisma.withdrawRequest.findMany.mockResolvedValue([
+      {
+        id: 'wr1',
+        status: 'BROADCASTED',
+        txHash: '0xabctx',
+        metadata: { mode: 'NORMAL_AB' },
+      },
+    ]);
+    getTransactionReceipt.mockResolvedValue({ status: 1 });
+    prisma.wallet.update.mockResolvedValue({
+      ...baseWallet,
+      status: WalletStatus.RECOVERY_PENDING,
+    });
+
+    const result = await service.startEmergencyRecovery('u1', 'w1', '123456');
+    expect(prisma.withdrawRequest.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'wr1' },
+        data: expect.objectContaining({ status: 'EXECUTED' }),
+      }),
+    );
+    expect(result.wallet.status).toBe(WalletStatus.RECOVERY_PENDING);
+  });
+
+  it('settles reverted BROADCASTED receipt then starts emergency', async () => {
+    prisma.wallet.findUnique.mockResolvedValue(baseWallet);
+    totp.verify.mockResolvedValue(true);
+    prisma.withdrawRequest.findMany.mockResolvedValue([
+      {
+        id: 'wr1',
+        status: 'BROADCASTED',
+        txHash: '0xabctx',
+        metadata: { mode: 'NORMAL_AB' },
+      },
+    ]);
+    getTransactionReceipt.mockResolvedValue({ status: 0 });
+    prisma.wallet.update.mockResolvedValue({
+      ...baseWallet,
+      status: WalletStatus.RECOVERY_PENDING,
+    });
+
+    const result = await service.startEmergencyRecovery('u1', 'w1', '123456');
+    expect(prisma.withdrawRequest.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'wr1' },
+        data: expect.objectContaining({ status: 'FAILED' }),
+      }),
+    );
     expect(result.wallet.status).toBe(WalletStatus.RECOVERY_PENDING);
   });
 

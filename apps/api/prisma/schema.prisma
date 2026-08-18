@@ -46,6 +46,8 @@ enum WithdrawStatus {
   APPROVED
   QUEUED
   PROCESSING
+  /// Signed raw tx was submitted to Sepolia; receipt wait is optional.
+  BROADCASTED
   EXECUTED
   REJECTED
   FAILED

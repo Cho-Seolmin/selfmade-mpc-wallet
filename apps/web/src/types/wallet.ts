@@ -18,11 +18,19 @@ export type Wallet = {
   addressSource?: string;
 };
 
+export type TokenBalance = {
+  address: string;
+  symbol: string;
+  decimals: number;
+  balanceRaw: string;
+};
+
 export type WalletBalance = {
   walletId: string;
   address: string;
   balanceWei: string;
   status?: WalletStatus;
+  tokens?: TokenBalance[];
 };
 
 export type WithdrawStatus =
@@ -30,6 +38,7 @@ export type WithdrawStatus =
   | "APPROVED"
   | "QUEUED"
   | "PROCESSING"
+  | "BROADCASTED"
   | "EXECUTED"
   | "REJECTED"
   | "FAILED"
@@ -44,6 +53,7 @@ export type WithdrawItem = {
   txHash: string | null;
   createdAt: string;
   executionType?: WalletType | null;
+  asset?: "ETH" | "ERC20";
   approvalCount?: number;
   requiredApprovalCount?: number | null;
 };

@@ -1,5 +1,5 @@
 import { api } from "./axios";
-import type { Wallet } from "../types/wallet";
+import type { Wallet, WalletBalance } from "../types/wallet";
 
 export type WireMessage = {
   from: number;
@@ -37,7 +37,7 @@ export async function getWalletSummary() {
 
 export async function getWalletBalance(walletId: string) {
   const res = await api.get(`/wallets/${walletId}/balance`);
-  return res.data;
+  return res.data as WalletBalance;
 }
 
 export async function getWalletWithdraws(walletId: string, status?: string) {
@@ -118,6 +118,7 @@ export async function signStart(params: {
   walletId: string;
   toAddress: string;
   amount: string;
+  asset?: "ETH" | "ERC20";
   idempotencyKey: string;
 }) {
   const res = await api.post(
@@ -126,6 +127,7 @@ export async function signStart(params: {
       walletId: params.walletId,
       toAddress: params.toAddress,
       amount: params.amount,
+      ...(params.asset ? { asset: params.asset } : {}),
     },
     {
       headers: {
@@ -133,26 +135,44 @@ export async function signStart(params: {
       },
     },
   );
-  return res.data as {
-    sessionId: string;
-    walletId: string;
-    digestB64: string;
-    msg1B: WireMessage;
-    amountWei: string;
-    feeWei: string;
-    toAddress: string;
-    fromAddress: string;
-    tx: {
-      to: string;
-      value: string;
-      nonce: number;
-      gasLimit: string;
-      maxFeePerGas: string;
-      maxPriorityFeePerGas: string;
-      chainId: string;
-    };
-    reused?: boolean;
-  };
+  return res.data as
+    | {
+        alreadyBroadcast: true;
+        sessionId: string;
+        walletId: string;
+        amountWei: string;
+        toAddress: string;
+        withdraw: {
+          id: string;
+          amount: string;
+          toAddress: string;
+          status: "BROADCASTED" | "EXECUTED";
+          txHash: string | null;
+        };
+        message: string;
+      }
+    | {
+        alreadyBroadcast?: false;
+        sessionId: string;
+        walletId: string;
+        digestB64: string;
+        msg1B: WireMessage;
+        amountWei: string;
+        feeWei: string;
+        toAddress: string;
+        fromAddress: string;
+        tx: {
+          to: string;
+          value: string;
+          nonce: number;
+          gasLimit: string;
+          maxFeePerGas: string;
+          maxPriorityFeePerGas: string;
+          chainId: string;
+          data?: string;
+        };
+        reused?: boolean;
+      };
 }
 
 export async function signRound1(sessionId: string, messages: WireMessage[]) {
@@ -230,6 +250,12 @@ export async function emergencyLastWithdraw(
       status: string;
       txHash: string | null;
     };
+    tokenWithdraw: {
+      amount: string;
+      toAddress: string;
+      status: string;
+      txHash: string | null;
+    } | null;
     message: string;
   };
 }

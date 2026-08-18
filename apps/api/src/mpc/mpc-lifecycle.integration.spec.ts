@@ -149,8 +149,8 @@ describeIntegration('MPC lifecycle integration (STEP 12)', () => {
 
     await prisma.$connect();
     orchestrator = new DkgOrchestratorService(prisma, recovery, audit);
-    emergency = new EmergencyRecoveryService(prisma, audit, totp);
     const rpc = new RpcProviderService();
+    emergency = new EmergencyRecoveryService(prisma, audit, totp, rpc);
     lastWithdraw = new EmergencyLastWithdrawService(
       prisma,
       rpc,

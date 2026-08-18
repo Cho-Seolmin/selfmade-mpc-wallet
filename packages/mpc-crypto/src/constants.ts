@@ -17,3 +17,6 @@ export const MPC_CHAIN_PATH = 'm';
 
 export const MPC_SCHEME = 'dkls23' as const;
 export const MPC_SCHEME_VERSION = 1 as const;
+
+/** Sepolia — the only chain this portfolio wallet signs for. */
+export const SEPOLIA_CHAIN_ID = 11155111n;

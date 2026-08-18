@@ -54,6 +54,7 @@ export function apiErrorMessage(err: unknown, fallback: string): string {
   const raw = anyErr?.response?.data?.message ?? anyErr?.message ?? fallback;
   const message = Array.isArray(raw) ? raw.join(", ") : String(raw);
   const code = anyErr?.response?.data?.code;
+  if (code === "INSUFFICIENT_GAS") return message;
   return code ? `${message} (${code})` : message;
 }
 

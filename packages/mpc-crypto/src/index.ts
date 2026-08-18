@@ -5,6 +5,7 @@ export {
   MPC_CHAIN_PATH,
   MPC_SCHEME,
   MPC_SCHEME_VERSION,
+  SEPOLIA_CHAIN_ID,
 } from './constants';
 export type { MpcPartyRole, MpcPartyId } from './constants';
 

@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
+import { formatUnits } from "ethers";
+import type { TokenBalance } from "../types/wallet";
 
 type Props = {
   open: boolean;
   busy: boolean;
   walletAddress: string;
   balanceEth: string;
+  token?: TokenBalance | null;
   onCancel: () => void;
   onConfirm: (params: { toAddress: string; otp: string }) => void;
 };
@@ -17,6 +20,7 @@ export default function EmergencyLastWithdrawModal({
   busy,
   walletAddress,
   balanceEth,
+  token,
   onCancel,
   onConfirm,
 }: Props) {
@@ -90,8 +94,12 @@ export default function EmergencyLastWithdrawModal({
             lineHeight: 1.5,
           }}
         >
-          Share B + Recovery Share C로 잔액 전액을 출금하고 지갑을 영구
-          폐기(RETIRED)합니다. 일부 금액 출금은 불가합니다.
+          Share B + Recovery Share C로 ETH와 설정된 토큰(TTK)을 지정 주소로
+          전액 출금한 뒤 지갑을 영구 폐기(RETIRED)합니다. 토큰을 먼저 보내고
+          이어서 ETH를 보냅니다. 일부 금액 출금은 불가합니다.
+          {token
+            ? " TTK 출금에는 가스용 Sepolia ETH가 필요합니다. ETH가 부족하면 출금이 중단되며 지갑은 폐기되지 않으니, MPC 주소로 소량의 ETH를 입금한 뒤 다시 시도하세요."
+            : ""}
         </p>
         <p
           style={{
@@ -104,6 +112,13 @@ export default function EmergencyLastWithdrawModal({
           출금 지갑: {walletAddress}
           <br />
           현재 잔액: {balanceEth} ETH (가스비 차감 후 전액)
+          {token ? (
+            <>
+              <br />
+              {`${formatUnits(token.balanceRaw || "0", token.decimals)} ${token.symbol}`}{" "}
+              (전액)
+            </>
+          ) : null}
         </p>
 
         <div className="field">

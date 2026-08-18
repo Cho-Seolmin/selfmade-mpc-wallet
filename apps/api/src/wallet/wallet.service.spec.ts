@@ -4,6 +4,11 @@ import { WalletService } from './wallet.service';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RpcProviderService } from './rpc-provider.service';
+import { readConfiguredErc20Balances } from './erc20-balance';
+
+jest.mock('./erc20-balance', () => ({
+  readConfiguredErc20Balances: jest.fn().mockResolvedValue([]),
+}));
 
 describe('WalletService RETIRED guards', () => {
   let service: WalletService;
@@ -109,6 +114,24 @@ describe('WalletService RETIRED guards', () => {
     await expect(service.getBalance('u1', 'w-live')).rejects.toBeInstanceOf(
       ForbiddenException,
     );
+  });
+
+  it('getBalance returns ETH and configured ERC-20 tokens', async () => {
+    prisma.wallet.findUnique.mockResolvedValue(liveWallet);
+    (readConfiguredErc20Balances as jest.Mock).mockResolvedValueOnce([
+      {
+        address: '0xc3CF22f1a32f360B685C56Da48481007d580cDb4',
+        symbol: 'TTK',
+        decimals: 18,
+        balanceRaw: '10000000000000000000000',
+      },
+    ]);
+
+    const result = await service.getBalance('u1', 'w-live');
+    expect(result.balanceWei).toBe('5');
+    expect(result.tokens).toEqual([
+      expect.objectContaining({ symbol: 'TTK', decimals: 18 }),
+    ]);
   });
 
   it('summary exposes canCreateMpcWallet when no live wallet', async () => {

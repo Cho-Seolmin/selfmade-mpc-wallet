@@ -118,6 +118,7 @@ export class WalletController {
       dto.toAddress,
       dto.amount,
       idempotencyKey,
+      dto.asset,
     );
   }
 
@@ -265,6 +266,7 @@ export class WalletController {
       | 'APPROVED'
       | 'QUEUED'
       | 'PROCESSING'
+      | 'BROADCASTED'
       | 'EXECUTED'
       | 'REJECTED'
       | 'FAILED'

@@ -1,6 +1,8 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsIn,
+  IsOptional,
   IsString,
   MinLength,
   ValidateNested,
@@ -16,10 +18,14 @@ export class SignStartDto {
   @MinLength(42)
   toAddress!: string;
 
-  /** ETH decimal (e.g. "0.01") or wei integer string. */
+  /** Decimal amount ("1" = 1 ETH or 1 TTK). */
   @IsString()
   @MinLength(1)
   amount!: string;
+
+  @IsOptional()
+  @IsIn(['ETH', 'ERC20'])
+  asset?: 'ETH' | 'ERC20';
 }
 
 export class SignMessagesDto {

@@ -8,7 +8,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { randomBytes } from 'crypto';
-import { getAddress } from 'ethers';
+import { getAddress, hexlify } from 'ethers';
 import { Prisma, WalletStatus } from '@prisma/client';
 import {
   MPC_CHAIN_PATH,
@@ -29,14 +29,23 @@ import { MpcErrorCode } from '../common/errors/mpc-error-codes';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   parseWithdrawAmountToWei,
+  parseWithdrawAsset,
   prepareAmountTransfer,
+  prepareErc20AmountTransfer,
+  isInsufficientGasError,
   serializeSignedTransfer,
   txFromStoredFields,
   unsignedTxDigest32,
+  type WithdrawAsset,
 } from './eth-transfer';
 import { Keyshare, Message, SignSession } from './wasm';
 import { RpcProviderService } from '../wallet/rpc-provider.service';
 import { assertWalletNotRetired } from '../wallet/wallet-lifecycle';
+import {
+  receiptLookup,
+  settleOpenNormalAbOrThrow,
+} from '../wallet/normal-ab-withdraw';
+import { getConfiguredTestTokenAddress } from '../wallet/erc20-balance';
 
 function createId(): string {
   return `s${randomBytes(16).toString('hex')}`;
@@ -50,6 +59,7 @@ type UnsignedTxFields = {
   maxFeePerGas: string;
   maxPriorityFeePerGas: string;
   chainId: string;
+  data: string;
 };
 
 type SignSessionState = {
@@ -64,7 +74,13 @@ type SignSessionState = {
   digestB64: string;
   tx: UnsignedTxFields;
   address: string;
-  step: 'WAIT_MSG1A' | 'WAIT_MSG2A' | 'WAIT_MSG3A' | 'WAIT_MSG4A' | 'DONE';
+  step:
+    | 'WAIT_MSG1A'
+    | 'WAIT_MSG2A'
+    | 'WAIT_MSG3A'
+    | 'WAIT_MSG4A'
+    | 'COMPLETING'
+    | 'DONE';
   createdAt: number;
 };
 
@@ -75,9 +91,26 @@ type AbWithdrawMetadata = {
   digestB64: string;
   msg1B: MpcWireMessage;
   fromAddress: string;
+  asset?: WithdrawAsset;
 };
 
-type StartResult = {
+type TerminalAbStatus = 'BROADCASTED' | 'EXECUTED';
+
+type AbWithdrawView = {
+  id: string;
+  amount: string;
+  toAddress: string;
+  status: TerminalAbStatus;
+  txHash: string | null;
+};
+
+type CompleteResult = {
+  withdraw: AbWithdrawView;
+  message: string;
+};
+
+type SigningStartResult = {
+  alreadyBroadcast?: false;
   sessionId: string;
   walletId: string;
   digestB64: string;
@@ -90,6 +123,23 @@ type StartResult = {
   tx: UnsignedTxFields;
   reused?: boolean;
 };
+
+/** Same Idempotency-Key after broadcast: no session resume / re-sign / rebroadcast. */
+type TerminalStartResult = {
+  alreadyBroadcast: true;
+  sessionId: string;
+  walletId: string;
+  amountWei: string;
+  toAddress: string;
+  withdraw: AbWithdrawView;
+  message: string;
+};
+
+type StartResult = SigningStartResult | TerminalStartResult;
+
+function isTerminalAbStatus(status: string): status is TerminalAbStatus {
+  return status === 'BROADCASTED' || status === 'EXECUTED';
+}
 
 const SESSION_TTL_MS = 10 * 60 * 1000;
 
@@ -123,7 +173,8 @@ export class SignOrchestratorService {
   /**
    * Start A+B signing: prepare partial ETH transfer, open SignSession(B), return msg1B.
    * Idempotency-Key reuses the same PROCESSING withdraw when body matches.
-   * At most one NORMAL_AB PROCESSING withdraw per wallet (DB lock + check).
+   * BROADCASTED/EXECUTED with the same key returns the existing txHash (no session resume).
+   * At most one in-flight NORMAL_AB (PROCESSING or unsettled BROADCASTED) per wallet.
    */
   async start(
     userId: string,
@@ -131,6 +182,7 @@ export class SignOrchestratorService {
     toAddressRaw: string,
     amount: string,
     idempotencyKeyRaw?: string,
+    assetRaw?: string,
   ): Promise<StartResult> {
     this.gc();
 
@@ -157,6 +209,13 @@ export class SignOrchestratorService {
       amountWei = parseWithdrawAmountToWei(amount);
     } catch (err: any) {
       throw new BadRequestException(err?.message || 'Invalid amount');
+    }
+
+    let asset: WithdrawAsset;
+    try {
+      asset = parseWithdrawAsset(assetRaw);
+    } catch (err: any) {
+      throw new BadRequestException(err?.message || 'Invalid asset');
     }
 
     const wallet = await this.requireActiveMpcWallet(userId, walletId);
@@ -187,18 +246,42 @@ export class SignOrchestratorService {
         existingByKey,
         toAddress,
         amountWeiStr,
+        asset,
       );
     }
 
     let prepared;
     try {
-      prepared = await prepareAmountTransfer({
-        provider: this.rpc.getProvider(),
-        fromAddress: wallet.address,
-        toAddress,
-        amountWei,
-      });
+      if (asset === 'ERC20') {
+        const tokenAddress = getConfiguredTestTokenAddress();
+        if (!tokenAddress) {
+          throw new Error(
+            'SEPOLIA_TEST_TOKEN_ADDRESS가 설정되지 않았습니다.',
+          );
+        }
+        prepared = await prepareErc20AmountTransfer({
+          provider: this.rpc.getProvider(),
+          fromAddress: wallet.address,
+          toAddress,
+          amountRaw: amountWei,
+          tokenAddress,
+        });
+      } else {
+        prepared = await prepareAmountTransfer({
+          provider: this.rpc.getProvider(),
+          fromAddress: wallet.address,
+          toAddress,
+          amountWei,
+        });
+      }
     } catch (err: any) {
+      if (isInsufficientGasError(err)) {
+        throw new BadRequestException({
+          message:
+            '토큰 출금 가스로 쓸 Sepolia ETH가 부족합니다. MPC 지갑 주소로 소량의 ETH를 입금한 뒤 다시 시도하세요.',
+          code: MpcErrorCode.INSUFFICIENT_GAS,
+        });
+      }
       throw new BadRequestException(err?.message || 'Failed to prepare transfer');
     }
 
@@ -225,6 +308,7 @@ export class SignOrchestratorService {
         digestB64,
         msg1B,
         fromAddress: wallet.address,
+        asset,
       };
 
       const withdraw = await this.prisma.$transaction(async (tx) => {
@@ -232,6 +316,18 @@ export class SignOrchestratorService {
         await tx.$queryRaw`
           SELECT id FROM "Wallet" WHERE id = ${wallet.id} FOR UPDATE
         `;
+
+        const lockedWallet = await tx.wallet.findUnique({
+          where: { id: wallet.id },
+          select: { status: true },
+        });
+        if (lockedWallet?.status !== WalletStatus.ACTIVE) {
+          throw new BadRequestException({
+            message:
+              '일반 출금은 ACTIVE 지갑에서만 가능합니다. 비상 복구 상태면 B+C 전액 출금을 사용하세요.',
+            code: MpcErrorCode.EMERGENCY_STATE_INVALID,
+          });
+        }
 
         const again = await tx.withdrawRequest.findUnique({
           where: { idempotencyKey },
@@ -263,17 +359,11 @@ export class SignOrchestratorService {
           }
         }
 
-        const openRows = await tx.withdrawRequest.findMany({
-          where: { walletId: wallet.id, status: 'PROCESSING' },
+        await settleOpenNormalAbOrThrow({
+          db: tx,
+          walletId: wallet.id,
+          getReceipt: receiptLookup(this.rpc.getProvider()),
         });
-        const busy = openRows.find((r) => asAbMetadata(r.metadata));
-        if (busy) {
-          throw new ConflictException({
-            message:
-              '이 지갑에 진행 중인 일반 출금 서명이 있습니다. 완료·취소 후 다시 시도하세요.',
-            code: MpcErrorCode.SIGN_SESSION_BUSY,
-          });
-        }
 
         try {
           return {
@@ -312,6 +402,7 @@ export class SignOrchestratorService {
           withdraw.row,
           toAddress,
           amountWeiStr,
+          asset,
         );
       }
 
@@ -324,13 +415,14 @@ export class SignOrchestratorService {
         msg1B,
         digestB64,
         tx: {
-          to: toAddress,
-          value: prepared.valueWei.toString(),
+          to: getAddress(prepared.tx.to!),
+          value: prepared.tx.value!.toString(),
           nonce: prepared.tx.nonce!,
           gasLimit: prepared.tx.gasLimit!.toString(),
           maxFeePerGas: prepared.tx.maxFeePerGas!.toString(),
           maxPriorityFeePerGas: prepared.tx.maxPriorityFeePerGas!.toString(),
           chainId: prepared.tx.chainId!.toString(),
+          data: hexlify(prepared.tx.data ?? '0x'),
         },
         address: wallet.address,
         step: 'WAIT_MSG1A',
@@ -348,6 +440,7 @@ export class SignOrchestratorService {
           toAddress,
           amountWei: amountWeiStr,
           sessionId,
+          asset,
         },
       });
 
@@ -455,43 +548,71 @@ export class SignOrchestratorService {
 
   /**
    * Browser sends msg4A; combine + broadcast.
-   * If withdraw already EXECUTED (client retry after success), return prior result.
+   * Persist BROADCASTED + txHash immediately after broadcast (before receipt).
+   * Retry of complete for BROADCASTED/EXECUTED returns the existing txHash
+   * without re-signing, rebroadcast, or waiting for a receipt.
    */
-  async complete(userId: string, sessionId: string, msg4A: MpcWireMessage[]) {
+  async complete(
+    userId: string,
+    sessionId: string,
+    msg4A: MpcWireMessage[],
+  ): Promise<CompleteResult> {
     this.gc();
 
-    const existingExecuted = await this.findExecutedBySession(userId, sessionId);
-    if (existingExecuted) {
-      return existingExecuted;
+    const existingTerminal = await this.findTerminalBySession(
+      userId,
+      sessionId,
+    );
+    if (existingTerminal) {
+      return existingTerminal;
     }
 
     const state = this.sessions.get(sessionId);
     if (!state || state.userId !== userId) {
       throw new NotFoundException('Sign session not found');
     }
+
+    const wr = await this.prisma.withdrawRequest.findUnique({
+      where: { id: state.withdrawRequestId },
+    });
+    if (wr && isTerminalAbStatus(wr.status)) {
+      this.sessions.delete(sessionId);
+      return this.toCompleteResult(wr, true);
+    }
+
     if (state.step !== 'WAIT_MSG4A') {
+      const raced = await this.findTerminalBySession(userId, sessionId);
+      if (raced) return raced;
       throw new BadRequestException(`unexpected step ${state.step}`);
     }
     if (msg4A.length < 1) {
       throw new BadRequestException('missing party A last message');
     }
 
-    const wr = await this.prisma.withdrawRequest.findUnique({
-      where: { id: state.withdrawRequestId },
+    const walletNow = await this.prisma.wallet.findUnique({
+      where: { id: state.walletId },
+      select: { status: true },
     });
-    if (wr?.status === 'EXECUTED') {
+    if (walletNow?.status !== WalletStatus.ACTIVE) {
       this.sessions.delete(sessionId);
-      return {
-        withdraw: {
-          id: wr.id,
-          amount: wr.amount,
-          toAddress: wr.toAddress,
-          status: 'EXECUTED' as const,
-          txHash: wr.txHash,
-        },
-        message: '출금이 이미 완료되었습니다.',
-      };
+      await this.prisma.withdrawRequest
+        .updateMany({
+          where: { id: state.withdrawRequestId, status: 'PROCESSING' },
+          data: {
+            status: 'FAILED',
+            failureReason: 'wallet left ACTIVE before A+B broadcast',
+          },
+        })
+        .catch(() => undefined);
+      throw new BadRequestException({
+        message:
+          '일반 출금은 ACTIVE 지갑에서만 가능합니다. 비상 복구가 시작된 뒤에는 A+B를 완료할 수 없습니다.',
+        code: MpcErrorCode.EMERGENCY_STATE_INVALID,
+      });
     }
+
+    state.step = 'COMPLETING';
+    this.sessions.set(sessionId, state);
 
     const sessionB = SignSession.fromBytes(base64ToBytes(state.stateB64));
     try {
@@ -509,60 +630,86 @@ export class SignOrchestratorService {
       const response = await this.rpc
         .getProvider()
         .broadcastTransaction(raw);
-      await response.wait(1);
 
-      const now = new Date();
-      await this.prisma.withdrawRequest.update({
+      const broadcastedAt = new Date();
+      const broadcasted = await this.prisma.withdrawRequest.update({
         where: { id: state.withdrawRequestId },
         data: {
-          status: 'EXECUTED',
+          status: 'BROADCASTED',
           txHash: response.hash,
-          broadcastedAt: now,
-          confirmedAt: now,
-          finalizedAt: now,
+          broadcastedAt,
         },
       });
-
-      await this.audit.write({
-        walletId: state.walletId,
-        userId,
-        withdrawRequestId: state.withdrawRequestId,
-        eventType: AuditEventType.WITHDRAW_COMPLETED,
-        actorType: 'SYSTEM',
-        message: 'Normal A+B withdraw completed',
-        data: {
-          txHash: response.hash,
-          amountWei: state.tx.value,
-          toAddress: state.tx.to,
-        },
-      });
-
-      state.step = 'DONE';
       this.sessions.delete(sessionId);
 
-      return {
-        withdraw: {
-          id: state.withdrawRequestId,
-          amount: state.tx.value,
-          toAddress: state.tx.to,
-          status: 'EXECUTED' as const,
-          txHash: response.hash,
-        },
-        message: '출금이 완료되었습니다.',
-      };
-    } catch (err: any) {
-      const message = err?.message || 'A+B withdraw failed';
-      this.logger.error(`sign complete failed session=${sessionId}`);
-      await this.prisma.withdrawRequest
-        .update({
+      try {
+        await response.wait(1);
+        const confirmedAt = new Date();
+        const executed = await this.prisma.withdrawRequest.update({
           where: { id: state.withdrawRequestId },
           data: {
-            status: 'FAILED',
-            failureReason: String(message).slice(0, 300),
+            status: 'EXECUTED',
+            confirmedAt,
+            finalizedAt: confirmedAt,
           },
-        })
-        .catch(() => undefined);
+        });
+
+        await this.audit.write({
+          walletId: state.walletId,
+          userId,
+          withdrawRequestId: state.withdrawRequestId,
+          eventType: AuditEventType.WITHDRAW_COMPLETED,
+          actorType: 'SYSTEM',
+          message: 'Normal A+B withdraw completed',
+          data: {
+            txHash: response.hash,
+            amountWei: state.tx.value,
+            toAddress: state.tx.to,
+          },
+        });
+
+        return this.toCompleteResult(executed, false);
+      } catch {
+        this.logger.warn(
+          `sign complete wait failed session=${sessionId}; leaving BROADCASTED txHash=${response.hash}`,
+        );
+        await this.audit.write({
+          walletId: state.walletId,
+          userId,
+          withdrawRequestId: state.withdrawRequestId,
+          eventType: AuditEventType.WITHDRAW_COMPLETED,
+          actorType: 'SYSTEM',
+          message: 'Normal A+B withdraw broadcasted (receipt wait skipped)',
+          data: {
+            txHash: response.hash,
+            amountWei: state.tx.value,
+            toAddress: state.tx.to,
+          },
+        });
+        return this.toCompleteResult(broadcasted, false);
+      }
+    } catch (err: any) {
       this.sessions.delete(sessionId);
+      const again = await this.prisma.withdrawRequest
+        .findUnique({ where: { id: state.withdrawRequestId } })
+        .catch(() => null);
+      if (again && isTerminalAbStatus(again.status)) {
+        return this.toCompleteResult(again, true);
+      }
+
+      const message = err?.message || 'A+B withdraw failed';
+      this.logger.error(`sign complete failed session=${sessionId}`);
+      if (!again || again.status === 'PROCESSING') {
+        await this.prisma.withdrawRequest
+          .update({
+            where: { id: state.withdrawRequestId },
+            data: {
+              status: 'FAILED',
+              failureReason: String(message).slice(0, 300),
+            },
+          })
+          .catch(() => undefined);
+      }
       throw new BadRequestException(
         `출금에 실패했습니다: ${String(message).slice(0, 200)}`,
       );
@@ -580,8 +727,8 @@ export class SignOrchestratorService {
     if (state && state.userId === userId) {
       this.sessions.delete(sessionId);
       await this.prisma.withdrawRequest
-        .update({
-          where: { id: state.withdrawRequestId },
+        .updateMany({
+          where: { id: state.withdrawRequestId, status: 'PROCESSING' },
           data: { status: 'FAILED', failureReason: 'aborted' },
         })
         .catch(() => undefined);
@@ -598,10 +745,12 @@ export class SignOrchestratorService {
       amount: string;
       toAddress: string;
       status: string;
+      txHash: string | null;
       metadata: unknown;
     },
     toAddress: string,
     amountWeiStr: string,
+    asset: WithdrawAsset = 'ETH',
   ): StartResult {
     if (row.walletId !== walletId) {
       throw new ConflictException({
@@ -618,15 +767,39 @@ export class SignOrchestratorService {
       });
     }
 
+    const rowAsset: WithdrawAsset = meta.asset === 'ERC20' ? 'ERC20' : 'ETH';
     if (
       getAddress(row.toAddress) !== getAddress(toAddress) ||
-      row.amount !== amountWeiStr
+      row.amount !== amountWeiStr ||
+      rowAsset !== asset
     ) {
       throw new ConflictException({
         message:
-          '같은 Idempotency-Key로 다른 수신 주소/금액이 요청되었습니다.',
+          '같은 Idempotency-Key로 다른 수신 주소/금액/자산이 요청되었습니다.',
         code: MpcErrorCode.IDEMPOTENCY_CONFLICT,
       });
+    }
+
+    if (isTerminalAbStatus(row.status)) {
+      this.sessions.delete(meta.sessionId);
+      return {
+        alreadyBroadcast: true,
+        sessionId: meta.sessionId,
+        walletId,
+        amountWei: amountWeiStr,
+        toAddress,
+        withdraw: {
+          id: row.id,
+          amount: row.amount,
+          toAddress: row.toAddress,
+          status: row.status,
+          txHash: row.txHash,
+        },
+        message:
+          row.status === 'EXECUTED'
+            ? '출금이 이미 완료되었습니다.'
+            : '출금이 이미 브로드캐스트되었습니다.',
+      };
     }
 
     const live = this.sessions.get(meta.sessionId);
@@ -659,27 +832,52 @@ export class SignOrchestratorService {
     };
   }
 
-  private async findExecutedBySession(userId: string, sessionId: string) {
-    const rows = await this.prisma.withdrawRequest.findMany({
-      where: {
-        status: 'EXECUTED',
-        wallet: { userId },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 20,
-    });
-    const match = rows.find((r) => asAbMetadata(r.metadata)?.sessionId === sessionId);
-    if (!match) return null;
+  private toCompleteResult(
+    row: {
+      id: string;
+      amount: string;
+      toAddress: string;
+      status: string;
+      txHash: string | null;
+    },
+    retried: boolean,
+  ): CompleteResult {
+    const status: TerminalAbStatus = isTerminalAbStatus(row.status)
+      ? row.status
+      : 'BROADCASTED';
+    const already =
+      status === 'EXECUTED'
+        ? '출금이 이미 완료되었습니다.'
+        : '출금이 이미 브로드캐스트되었습니다.';
+    const first =
+      status === 'EXECUTED'
+        ? '출금이 완료되었습니다.'
+        : '출금이 브로드캐스트되었습니다.';
     return {
       withdraw: {
-        id: match.id,
-        amount: match.amount,
-        toAddress: match.toAddress,
-        status: 'EXECUTED' as const,
-        txHash: match.txHash,
+        id: row.id,
+        amount: row.amount,
+        toAddress: row.toAddress,
+        status,
+        txHash: row.txHash,
       },
-      message: '출금이 이미 완료되었습니다.',
+      message: retried ? already : first,
     };
+  }
+
+  private async findTerminalBySession(userId: string, sessionId: string) {
+    const match = await this.prisma.withdrawRequest.findFirst({
+      where: {
+        wallet: { userId },
+        status: { in: ['BROADCASTED', 'EXECUTED'] },
+        metadata: {
+          path: ['sessionId'],
+          equals: sessionId,
+        },
+      },
+    });
+    if (!match || !isTerminalAbStatus(match.status)) return null;
+    return this.toCompleteResult(match, true);
   }
 
   private async requireActiveMpcWallet(userId: string, walletId: string) {
@@ -729,8 +927,8 @@ export class SignOrchestratorService {
       if (now - s.createdAt > SESSION_TTL_MS) {
         this.sessions.delete(id);
         void this.prisma.withdrawRequest
-          .update({
-            where: { id: s.withdrawRequestId },
+          .updateMany({
+            where: { id: s.withdrawRequestId, status: 'PROCESSING' },
             data: { status: 'EXPIRED', failureReason: 'sign session expired' },
           })
           .catch(() => undefined);

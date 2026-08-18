@@ -45,62 +45,72 @@ export class TotpService {
   /**
    * One-time plaintext reveal for Authenticator enrollment.
    * Creates a random secret if missing; subsequent calls return 410.
+   * Concurrent reveals are serialized with SELECT ... FOR UPDATE.
    */
   async revealSetupOnce(userId: string, email: string) {
     this.assertConfigured();
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        encryptedTotpSecret: true,
-        totpSecretRevealedAt: true,
-      },
-    });
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM "User" WHERE id = ${userId} FOR UPDATE
+      `;
+      if (locked.length === 0) {
+        throw new NotFoundException('User not found');
+      }
 
-    if (user.totpSecretRevealedAt) {
-      throw new GoneException({
-        message:
-          'OTP secret은 이미 1회 표시되었습니다. 재조회할 수 없습니다.',
-        code: 'TOTP_SECRET_ALREADY_REVEALED',
-        configured: true,
-        alreadyRevealed: true,
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          email: true,
+          encryptedTotpSecret: true,
+          totpSecretRevealedAt: true,
+        },
       });
-    }
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
 
-    let secret: string;
-    let created = false;
-    if (user.encryptedTotpSecret) {
-      secret = decryptTotpSecret(user.encryptedTotpSecret);
-    } else {
-      secret = generateTotpSecret();
-      created = true;
-    }
+      if (user.totpSecretRevealedAt) {
+        throw new GoneException({
+          message:
+            'OTP secret은 이미 1회 표시되었습니다. 재조회할 수 없습니다.',
+          code: 'TOTP_SECRET_ALREADY_REVEALED',
+          configured: true,
+          alreadyRevealed: true,
+        });
+      }
 
-    const revealedAt = new Date();
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        ...(created
-          ? { encryptedTotpSecret: encryptTotpSecret(secret) }
-          : {}),
-        totpSecretRevealedAt: revealedAt,
-      },
+      let secret: string;
+      let created = false;
+      if (user.encryptedTotpSecret) {
+        secret = decryptTotpSecret(user.encryptedTotpSecret);
+      } else {
+        secret = generateTotpSecret();
+        created = true;
+      }
+
+      const revealedAt = new Date();
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          ...(created
+            ? { encryptedTotpSecret: encryptTotpSecret(secret) }
+            : {}),
+          totpSecretRevealedAt: revealedAt,
+        },
+      });
+
+      const labelEmail = email || user.email;
+      return {
+        secret,
+        otpauthUrl: buildTotpAuthUrl(secret, labelEmail),
+        created,
+        alreadyRevealed: false,
+        configured: true,
+        hint: '이 secret은 한 번만 표시됩니다. Google Authenticator에 지금 등록하세요. (TOTP_ENCRYPTION_KEY로 암호화 저장)',
+      };
     });
-
-    const labelEmail = email || user.email;
-    return {
-      secret,
-      otpauthUrl: buildTotpAuthUrl(secret, labelEmail),
-      created,
-      alreadyRevealed: false,
-      configured: true,
-      hint: '이 secret은 한 번만 표시됩니다. Google Authenticator에 지금 등록하세요. (TOTP_ENCRYPTION_KEY로 암호화 저장)',
-    };
   }
 
   /** @deprecated alias — prefer revealSetupOnce */

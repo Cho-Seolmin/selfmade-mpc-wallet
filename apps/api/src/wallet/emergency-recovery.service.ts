@@ -13,6 +13,11 @@ import { MpcErrorCode } from '../common/errors/mpc-error-codes';
 import { PrismaService } from '../prisma/prisma.service';
 import { OtpFailureTracker } from './otp-failure-tracker';
 import { assertWalletNotRetired } from './wallet-lifecycle';
+import {
+  receiptLookup,
+  settleOpenNormalAbOrThrow,
+} from './normal-ab-withdraw';
+import { RpcProviderService } from './rpc-provider.service';
 
 @Injectable()
 export class EmergencyRecoveryService {
@@ -23,6 +28,7 @@ export class EmergencyRecoveryService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly totp: TotpService,
+    private readonly rpc: RpcProviderService,
   ) {}
 
   /**
@@ -135,22 +141,73 @@ export class EmergencyRecoveryService {
 
     await this.verifyEmergencyOtp(userId, wallet.id, otp);
 
-    const updated =
-      wallet.status === WalletStatus.RECOVERY_PENDING
-        ? wallet
-        : await this.prisma.wallet.update({
-            where: { id: wallet.id },
-            data: { status: WalletStatus.RECOVERY_PENDING },
-            select: {
-              id: true,
-              walletType: true,
-              status: true,
-              address: true,
-              mpcPublicKey: true,
-              createdAt: true,
-              retiredAt: true,
-            },
-          });
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT id FROM "Wallet" WHERE id = ${wallet.id} FOR UPDATE
+      `;
+
+      const locked = await tx.wallet.findUnique({
+        where: { id: wallet.id },
+        select: {
+          id: true,
+          walletType: true,
+          status: true,
+          address: true,
+          mpcPublicKey: true,
+          createdAt: true,
+          retiredAt: true,
+          encryptedShareB: true,
+        },
+      });
+      if (!locked) {
+        throw new NotFoundException({
+          message: 'Wallet not found',
+          code: MpcErrorCode.WALLET_NOT_FOUND,
+        });
+      }
+      assertWalletNotRetired(locked.status, '비상 복구');
+      if (locked.status === WalletStatus.RETIRING) {
+        throw new BadRequestException({
+          message:
+            '비상 출금이 이미 진행 중입니다. 완료될 때까지 기다려 주세요.',
+          code: MpcErrorCode.EMERGENCY_STATE_INVALID,
+        });
+      }
+      if (!locked.encryptedShareB) {
+        throw new BadRequestException({
+          message: 'Share B가 없어 비상 복구를 진행할 수 없습니다.',
+          code: MpcErrorCode.SHARE_B_MISSING,
+        });
+      }
+      await settleOpenNormalAbOrThrow({
+        db: tx,
+        walletId: locked.id,
+        getReceipt: receiptLookup(this.rpc.getProvider()),
+      });
+      if (locked.status === WalletStatus.RECOVERY_PENDING) {
+        return locked;
+      }
+      if (locked.status !== WalletStatus.ACTIVE) {
+        throw new BadRequestException({
+          message: '비상 복구는 ACTIVE 지갑에서만 시작할 수 있습니다.',
+          code: MpcErrorCode.EMERGENCY_STATE_INVALID,
+        });
+      }
+
+      return tx.wallet.update({
+        where: { id: locked.id },
+        data: { status: WalletStatus.RECOVERY_PENDING },
+        select: {
+          id: true,
+          walletType: true,
+          status: true,
+          address: true,
+          mpcPublicKey: true,
+          createdAt: true,
+          retiredAt: true,
+        },
+      });
+    });
 
     await this.audit.write({
       walletId: wallet.id,
