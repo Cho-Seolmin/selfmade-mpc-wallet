@@ -21,6 +21,7 @@ export type EmergencyBcMetadata = {
   zeroBalance?: boolean;
   skipped?: string;
   signedRaw?: string;
+  tokenTxHash?: string | null;
   tx?: Record<string, unknown>;
 };
 
