@@ -5,6 +5,8 @@
 
 > Sepolia 테스트넷 · 학습/포트폴리오용입니다. 메인넷·실자산 용도가 아닙니다.
 
+데모: [https://selfmade-mpc-wallet-web.vercel.app](https://selfmade-mpc-wallet-web.vercel.app)
+
 ---
 
 ## 핵심 정책
@@ -235,6 +237,23 @@ npm run dev:web        # :5173
 
 브라우저에서 회원가입 → Settings에 OTP 등록 → Dashboard에서 **Create MPC Wallet**.  
 TTK를 쓰려면 배포/민팅 후 **MPC 지갑 주소**로 토큰을 보내고, API에 `SEPOLIA_TEST_TOKEN_ADDRESS`를 넣습니다. (`test-token/README.md`)
+
+---
+
+## 배포 (Vercel + Railway)
+
+Sepolia 데모가 클라우드에 올라가 있습니다.
+
+| 구성 | 호스트 |
+| --- | --- |
+| Web | Vercel — [https://selfmade-mpc-wallet-web.vercel.app](https://selfmade-mpc-wallet-web.vercel.app) |
+| API · PostgreSQL · Recovery | Railway (`apps/web`만 Vercel, 나머지는 Railway) |
+
+- 웹 `VITE_API_URL` = API 공개 HTTPS, API `FRONTEND_URL` = Vercel origin (끝 슬래시 없음, CORS·쿠키)
+- Recovery는 브라우저에서 호출하지 않음. API만 내부망 + `RECOVERY_SERVICE_TOKEN`으로 호출. Share C용 SQLite는 Volume에 유지
+- 배포 DB는 로컬 테스트 DB와 분리(빈 스키마). 시크릿은 호스트 env에만 둠
+
+확인한 흐름: 회원가입 → MPC 생성 → A+B 일반 출금 → OTP+B+C 비상 출금 → 지갑 재생성
 
 ---
 
