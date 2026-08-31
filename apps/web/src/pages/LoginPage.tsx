@@ -9,7 +9,7 @@ export default function LoginPage() {
   const from = (location.state as { from?: string })?.from || "/dashboard";
 
   const [email, setEmail] = useState("test@test.com");
-  const [password, setPassword] = useState("1234");
+  const [password, setPassword] = useState("12345678");
   const [error, setError] = useState("");
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -76,9 +76,9 @@ export default function LoginPage() {
         <div className="info-box info-box--neutral" style={{ marginTop: "20px" }}>
           테스트용 어드민 계정
           <div style={{ marginTop: "4px" }}>
-            1: test@test.com / 1234
+            1: test@test.com / 12345678
             <br />
-            2: test2@test.com / 1234
+            2: test2@test.com / 12345678
           </div>
         </div>
 
