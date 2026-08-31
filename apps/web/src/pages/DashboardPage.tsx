@@ -624,21 +624,17 @@ export default function DashboardPage() {
                   fontWeight: 700,
                   color: "var(--color-text)",
                   padding: "4px 0",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "4px",
                 }}
               >
-                {balanceEth} ETH
-                {tokenBalanceLabel && (
-                  <div
-                    style={{
-                      fontSize: "16px",
-                      fontWeight: 600,
-                      color: "var(--color-text-muted)",
-                      marginTop: "4px",
-                    }}
-                  >
-                    {tokenBalanceLabel}
-                  </div>
-                )}
+                <div>
+                  {balanceEth} ETH
+                </div>
+                {tokenBalanceLabel ? (
+                  <div>{tokenBalanceLabel}</div>
+                ) : null}
               </div>
             </div>
 
