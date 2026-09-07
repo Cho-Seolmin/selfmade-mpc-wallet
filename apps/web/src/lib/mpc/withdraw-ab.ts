@@ -31,7 +31,8 @@ export type WithdrawAbResult = {
 
 /**
  * Browser party A + Main API party B threshold sign a partial ETH transfer.
- * Share A is loaded from IndexedDB only for this call and wiped from memory after.
+ * Share A is loaded from IndexedDB only for this call. Plaintext buffer is
+ * zeroized afterwards (best-effort; JS/WASM copies are not fully controllable).
  * Before signing, WYSIWYS recomputes digest from returned tx fields vs UI intent.
  */
 export async function withdrawViaAbSigning(params: {

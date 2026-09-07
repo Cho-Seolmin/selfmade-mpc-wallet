@@ -13,15 +13,29 @@ const SHARE_C_PARTY_ID = 2;
 const STATUS_ACTIVE = 'ACTIVE';
 const STATUS_RETIRED = 'RETIRED';
 
+/**
+ * One Share C row per walletId.
+ * Any existing row blocks insert. Status only chooses the error message.
+ */
+export function assertShareCInsertAllowed(existing: { status: string } | null) {
+  if (existing) {
+    throw new ConflictException(
+      existing.status === STATUS_RETIRED
+        ? 'Share C is RETIRED and cannot be reactivated'
+        : 'Share C already exists for this wallet',
+    );
+  }
+}
+
 @Injectable()
 export class SharesService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Store encrypted Share C after DKG.
-   * Rejects overwrite of an ACTIVE share (idempotent only for identical wallet).
+   * Insert a new Share C row. Production path is DKG finalize (prisma.create).
+   * This helper is create-only — never overwrites.
    */
-  async upsertShareC(dto: UpsertShareCDto) {
+  async insertShareC(dto: UpsertShareCDto) {
     const partyId = dto.partyId ?? SHARE_C_PARTY_ID;
     if (partyId !== SHARE_C_PARTY_ID) {
       throw new ConflictException('Recovery Server only stores Share C (partyId=2)');
@@ -30,10 +44,7 @@ export class SharesService {
     const existing = await this.prisma.mpcRecoveryShare.findUnique({
       where: { walletId: dto.walletId },
     });
-
-    if (existing && existing.status === STATUS_ACTIVE) {
-      throw new ConflictException('Active Share C already exists for this wallet');
-    }
+    assertShareCInsertAllowed(existing);
 
     let shareBytes: Buffer;
     try {
@@ -47,28 +58,16 @@ export class SharesService {
 
     const encryptedShareC = encryptShareC(shareBytes);
 
-    const row = existing
-      ? await this.prisma.mpcRecoveryShare.update({
-          where: { walletId: dto.walletId },
-          data: {
-            userId: dto.userId,
-            partyId,
-            mpcPublicKey: dto.mpcPublicKey,
-            encryptedShareC,
-            status: STATUS_ACTIVE,
-            retiredAt: null,
-          },
-        })
-      : await this.prisma.mpcRecoveryShare.create({
-          data: {
-            walletId: dto.walletId,
-            userId: dto.userId,
-            partyId,
-            mpcPublicKey: dto.mpcPublicKey,
-            encryptedShareC,
-            status: STATUS_ACTIVE,
-          },
-        });
+    const row = await this.prisma.mpcRecoveryShare.create({
+      data: {
+        walletId: dto.walletId,
+        userId: dto.userId,
+        partyId,
+        mpcPublicKey: dto.mpcPublicKey,
+        encryptedShareC,
+        status: STATUS_ACTIVE,
+      },
+    });
 
     return this.toSafeDto(row);
   }

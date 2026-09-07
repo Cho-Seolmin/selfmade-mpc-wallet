@@ -10,6 +10,7 @@ datasource db {
 }
 
 /// Share C only. Never store Share A/B or a full private key here.
+/// RETIRED rows are terminal: ciphertext is wiped and the walletId must not be reactivated.
 model MpcRecoveryShare {
   id              String    @id @default(cuid())
   /// Logical FK to main API Wallet.id (cross-database).

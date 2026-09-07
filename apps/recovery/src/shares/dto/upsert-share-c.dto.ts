@@ -15,8 +15,8 @@ export class UpsertShareCDto {
   mpcPublicKey!: string;
 
   /**
-   * Opaque Share C bytes as base64 (plaintext over TLS + service token only).
-   * Recovery encrypts at rest with RECOVERY_ENCRYPTION_KEY.
+   * Opaque Share C bytes as base64. In-process persist only (tests / helpers).
+   * HTTP has no import path — production Share C is created by DKG finalize.
    */
   @IsString()
   shareCBase64!: string;

@@ -1,14 +1,5 @@
-import {
-  Controller,
-  Get,
-  Param,
-  Post,
-  Put,
-  Body,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { ServiceTokenGuard } from '../auth/service-token.guard';
-import { UpsertShareCDto } from './dto/upsert-share-c.dto';
 import { SharesService } from './shares.service';
 
 @Controller('shares')
@@ -16,13 +7,7 @@ import { SharesService } from './shares.service';
 export class SharesController {
   constructor(private readonly shares: SharesService) {}
 
-  /** Store Share C after DKG (Main API → Recovery). */
-  @Put()
-  upsert(@Body() dto: UpsertShareCDto) {
-    return this.shares.upsertShareC(dto);
-  }
-
-  /** Safe metadata (no share material). */
+  /** Safe metadata (no share material). Share C is created only by DKG finalize. */
   @Get(':walletId')
   getMeta(@Param('walletId') walletId: string) {
     return this.shares.getShareMeta(walletId);

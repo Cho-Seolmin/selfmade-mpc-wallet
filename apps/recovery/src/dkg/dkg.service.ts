@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { encryptShareC } from '../crypto/share-c-encryption';
 import { PrismaService } from '../prisma/prisma.service';
+import { assertShareCInsertAllowed } from '../shares/shares.service';
 import { KeygenSession, Message } from '../mpc/wasm';
 import {
   MPC_PARTIES,
@@ -144,34 +145,18 @@ export class DkgService {
       const existing = await this.prisma.mpcRecoveryShare.findUnique({
         where: { walletId: state.walletId },
       });
-      if (existing?.status === 'ACTIVE') {
-        throw new BadRequestException('Active Share C already exists');
-      }
+      assertShareCInsertAllowed(existing);
 
-      if (existing) {
-        await this.prisma.mpcRecoveryShare.update({
-          where: { walletId: state.walletId },
-          data: {
-            userId: state.userId,
-            partyId: MPC_PARTY_C,
-            mpcPublicKey: publicKeyHex,
-            encryptedShareC,
-            status: 'ACTIVE',
-            retiredAt: null,
-          },
-        });
-      } else {
-        await this.prisma.mpcRecoveryShare.create({
-          data: {
-            walletId: state.walletId,
-            userId: state.userId,
-            partyId: MPC_PARTY_C,
-            mpcPublicKey: publicKeyHex,
-            encryptedShareC,
-            status: 'ACTIVE',
-          },
-        });
-      }
+      await this.prisma.mpcRecoveryShare.create({
+        data: {
+          walletId: state.walletId,
+          userId: state.userId,
+          partyId: MPC_PARTY_C,
+          mpcPublicKey: publicKeyHex,
+          encryptedShareC,
+          status: 'ACTIVE',
+        },
+      });
 
       this.sessions.delete(sessionId);
 

@@ -116,15 +116,6 @@ export class RecoveryClientService {
     ).catch(() => ({ ok: true as const }));
   }
 
-  storeShareC(params: {
-    walletId: string;
-    userId: string;
-    mpcPublicKey: string;
-    shareCBase64: string;
-  }) {
-    return this.request('PUT', '/shares', params);
-  }
-
   /**
    * Start party C SignSession on Recovery (Share C never exported).
    */

@@ -2,10 +2,34 @@ import { config } from 'dotenv';
 import { resolve } from 'path';
 import { randomBytes } from 'crypto';
 import { Test } from '@nestjs/testing';
-import { SharesService } from './shares.service';
+import { SharesService, assertShareCInsertAllowed } from './shares.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 config({ path: resolve(__dirname, '../../.env') });
+
+describe('assertShareCInsertAllowed', () => {
+  it('allows a new walletId', () => {
+    expect(() => assertShareCInsertAllowed(null)).not.toThrow();
+  });
+
+  it('rejects RETIRED rows', () => {
+    expect(() => assertShareCInsertAllowed({ status: 'RETIRED' })).toThrow(
+      /RETIRED and cannot be reactivated/,
+    );
+  });
+
+  it('rejects existing ACTIVE rows', () => {
+    expect(() => assertShareCInsertAllowed({ status: 'ACTIVE' })).toThrow(
+      /already exists/,
+    );
+  });
+
+  it('rejects any other existing status', () => {
+    expect(() => assertShareCInsertAllowed({ status: 'UNKNOWN' })).toThrow(
+      /already exists/,
+    );
+  });
+});
 
 describe('SharesService', () => {
   let service: SharesService;
@@ -35,7 +59,7 @@ describe('SharesService', () => {
     const shareBytes = randomBytes(96);
     const walletId = `wallet_${Date.now()}`;
 
-    const meta = await service.upsertShareC({
+    const meta = await service.insertShareC({
       walletId,
       userId: 'user_1',
       mpcPublicKey:
@@ -57,7 +81,7 @@ describe('SharesService', () => {
     loaded.fill(0);
 
     await expect(
-      service.upsertShareC({
+      service.insertShareC({
         walletId,
         userId: 'user_1',
         mpcPublicKey: meta.mpcPublicKey,
@@ -72,5 +96,14 @@ describe('SharesService', () => {
     await expect(service.loadActiveShareCBytes(walletId)).rejects.toThrow(
       /not ACTIVE/,
     );
+
+    await expect(
+      service.insertShareC({
+        walletId,
+        userId: 'user_1',
+        mpcPublicKey: meta.mpcPublicKey,
+        shareCBase64: randomBytes(96).toString('base64'),
+      }),
+    ).rejects.toThrow(/RETIRED and cannot be reactivated/);
   });
 });

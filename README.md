@@ -58,7 +58,8 @@ test-token/     # Sepolia TestToken(TTK) Hardhat 배포·민팅 (지갑 런타�
 - 생성 결과:
   - Share A → IndexedDB 암호화 저장
   - Share B → API DB AES-GCM 저장
-  - Share C → Recovery Server 저장
+  - Share C → Recovery Server SQLite (DKG finalize에서만 생성·암호화 저장)
+
   - PIN으로 암호화된 **Recovery File** 1회 다운로드 (PIN → **PBKDF2-SHA256, 210k iterations** → AES-GCM)
 - **Recovery File은 브라우저에서 생성되며 API/Recovery Server에 저장되거나 전송되지 않는다.** (성공 시 감사 이벤트만)
 
@@ -235,7 +236,7 @@ npm run dev:api        # :3000
 npm run dev:web        # :5173
 ```
 
-브라우저에서 회원가입 → Settings에 OTP 등록 → Dashboard에서 **Create MPC Wallet**.  
+브라우저에서 회원가입 → 이메일 인증(가입 응답의 verify 링크) → 로그인 → Settings에 OTP 등록 → Dashboard에서 **Create MPC Wallet**.  
 TTK를 쓰려면 배포/민팅 후 **MPC 지갑 주소**로 토큰을 보내고, API에 `SEPOLIA_TEST_TOKEN_ADDRESS`를 넣습니다. (`test-token/README.md`)
 
 ---
@@ -250,7 +251,7 @@ Sepolia 데모가 클라우드에 올라가 있습니다.
 | API · PostgreSQL · Recovery | Railway (`apps/web`만 Vercel, 나머지는 Railway) |
 
 - 웹 `VITE_API_URL` = API 공개 HTTPS, API `FRONTEND_URL` = Vercel origin (끝 슬래시 없음, CORS·쿠키)
-- Recovery는 브라우저에서 호출하지 않음. API만 내부망 + `RECOVERY_SERVICE_TOKEN`으로 호출. Share C용 SQLite는 Volume에 유지
+- Recovery는 public domain을 노출하지 않고 private network에서 Main API만 접근하도록 배포. CORS 역시 비활성화하여 정상적인 Browser 접근 경로를 제공하지 않음. API만 `RECOVERY_SERVICE_TOKEN`으로 호출. Share C용 SQLite는 Volume에 유지
 - 배포 DB는 로컬 테스트 DB와 분리(빈 스키마). 시크릿은 호스트 env에만 둠
 
 확인한 흐름: 회원가입 → MPC 생성 → A+B 일반 출금 → OTP+B+C 비상 출금 → 지갑 재생성
@@ -277,14 +278,14 @@ Sepolia 데모가 클라우드에 올라가 있습니다.
 | `GET` | `/auth/totp-status` | OTP 설정 여부 · secret 이미 공개됐는지 (평문 없음) |
 | `GET` | `/auth/totp-setup` | OTP secret / otpauth URL **1회만** (이후 410) |
 
-Recovery (`:3001`, service token only):
+Recovery (`:3001`, service token only). Share C는 Recovery 내부 DKG finalize에서만 생성합니다. HTTP로 평문 Share C를 넣는 경로는 없습니다.
 
 | Method | Path | 설명 |
 | --- | --- | --- |
-| `PUT` | `/shares` | Share C 저장 |
+| `GET` | `/shares/:walletId` | Share C 메타 (암호문·평문 없음) |
 | `POST` | `/sign/sessions` … `/last` | B+C 서명 라운드 (party C, Share C 미반출) |
-| `POST` | `/shares/:walletId/retire` | Share C 폐기 |
-| `POST` | `/dkg/sessions/*` | DKG party C |
+| `POST` | `/shares/:walletId/retire` | Share C 폐기 (ciphertext 삭제, 재활성화 불가) |
+| `POST` | `/dkg/sessions/*` | DKG party C (finalize 시 Share C 생성) |
 
 ---
 
@@ -314,10 +315,12 @@ npm run test:integration
 
 - Share / PIN은 로그·일반 API 응답에 넣지 않음. OTP 평문 secret은 `/auth/totp-setup` **1회 reveal만** (이후 410)
 - A+B 출금 WYSIWYS: 브라우저가 unsigned `tx`로 digest 재검증 후 서명 (ERC-20 calldata는 TestToken 절)
-- Recovery는 브라우저에서 호출하지 않음 (API ↔ Recovery만)
+- Recovery는 public domain을 노출하지 않고 private network에서 Main API만 접근하도록 배포. CORS 역시 비활성화하여 정상적인 Browser 접근 경로를 제공하지 않음
 - Recovery File PIN은 PBKDF2-SHA256(210k) → AES-GCM
 - Share B / Share C 암호화 키 분리
-- Share C는 Recovery 프로세스 밖으로 export하지 않음 (B+C는 wire relay)
+- Share C는 Recovery 내부 DKG에서만 생성. HTTP import(`PUT /shares`) 없음
+- 민감 데이터의 메모리 체류 시간을 줄이기 위해, 가능한 범위에서 명시적으로 buffer zeroization(`fill(0)`)과 WASM resource 해제(`free()`)를 수행한다. Node/WASM/JS runtime 복사본까지 완벽하게 지운다고 주장하지 않음
+- Share C는 `walletId`당 1행. 이미 행이 있으면(ACTIVE·RETIRED 포함) 다시 만들지 않음. 새 지갑은 새 DKG·새 `walletId`
 - API에 `BACKEND_SIGNER_PRIVATE_KEY` 없음 — 체인 I/O는 `RpcProviderService`만
 - `RETIRED` 이후 해당 지갑 재서명 불가
 - OTP 연속 실패 시 짧은 잠금 (인메모리)
@@ -329,10 +332,21 @@ npm run test:integration
 
 포트폴리오 핵심 흐름(DKG · A+B 일반 출금 · Recovery File 복구 · OTP+B+C 비상 전액 출금 · RETIRED)은 구현 완료입니다.
 
+데모에서 **의도적으로 막지 않은** 잔여 위험입니다. 면접/운영 기준으로는 한계로 읽고, 프로덕션이면 아래처럼 키우는 게 맞습니다.
+
+### API 완전 장악 → Share B + 서비스 토큰 → Recovery `/sign`
+
+- **한계:** Recovery는 OTP·`RECOVERY_PENDING`·출금 정책을 모릅니다. `RECOVERY_SERVICE_TOKEN`만 보면 `/sign`에 응합니다. API 프로세스와 env가 통째로 넘어가면 Share B를 열고, 토큰으로 Recovery에 닿아, 사용자 OTP를 건너뛴 채 B+C 비상 서명이 가능합니다. B와 C를 인프라에 둔 2-of-3 비상 경로의 잔여 신뢰입니다. 격리는 API DB만 유출됐을 때의 기준입니다.
+- **후속:** Recovery가 Main API를 그대로 신뢰하지 않게 합니다. 일회성 emergency authorization, Recovery가 정책을 직접 검증, 또는 mTLS + 세분화된 service identity. 지금은 Recovery를 두 번째 정책 엔진으로 키우지 않습니다.
+
+### Recovery SQLite + `RECOVERY_ENCRYPTION_KEY` 동시 탈취
+
+- **한계:** Share C는 Recovery env의 AES-256-GCM 키로 암호화합니다. 암호문(SQLite Volume)과 키가 같은 호스트에 있으면, 그 호스트가 넘어갈 때 복호화할 수 있습니다.
+- **후속:** 정석은 KMS/HSM으로 키를 프로세스 디스크·env 밖으로 빼는 것입니다. 이 포트폴리오에는 클라우드 IAM·unwrap 경로까지 붙이지 않습니다. 데모는 env 키 + 키 분리(Share B ≠ Share C)로 둡니다.
+
 | 항목 | 상태 |
 | --- | --- |
 | Queue/Worker 비동기 출금 | 현재 출금은 동기 HTTP 라운드 처리 |
-| 프로덕션 키 관리 / HSM | 데모용 env 키 암호화 |
 | 레거시 DFNS / 6종 지갑 / KMS 데모 | 제거됨 (이 저장소는 Selfmade MPC 중심) |
 
 ---
