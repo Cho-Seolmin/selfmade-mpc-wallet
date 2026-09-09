@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
 import { DkgOrchestratorService } from '../mpc/dkg-orchestrator.service';
@@ -12,7 +13,7 @@ import { RpcProviderService } from './rpc-provider.service';
 import { WithdrawGateway } from './withdraw.gateway';
 
 @Module({
-  imports: [AuthModule, AuditModule],
+  imports: [AuthModule, AuditModule, ThrottlerModule],
   controllers: [WalletController],
   providers: [
     WalletService,

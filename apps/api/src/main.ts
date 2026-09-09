@@ -1,24 +1,35 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
 import { json } from 'express';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
-
-function getFrontendOrigin(): string {
-  return process.env.FRONTEND_URL ?? 'http://localhost:5173';
-}
+import {
+  assertApiEnv,
+  frontendOrigin,
+  shouldTrustOneProxyHop,
+} from './config/api-env';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  assertApiEnv();
 
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  if (shouldTrustOneProxyHop()) {
+    // One hop (Railway edge). Do not use `true` — that trusts leftmost X-Forwarded-For.
+    app.set('trust proxy', 1);
+  }
+
+  app.use(helmet());
   // DKLs round messages exchanged with the browser can exceed the default 100kb.
   app.use(json({ limit: '15mb' }));
   app.use(cookieParser());
 
   app.enableCors({
-    origin: getFrontendOrigin(),
+    origin: frontendOrigin(),
     credentials: true,
   });
 

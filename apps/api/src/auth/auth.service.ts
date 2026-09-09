@@ -90,6 +90,7 @@ export class AuthService {
       email: user.email,
       role: user.role,
       type: 'access',
+      tokenVersion: user.tokenVersion,
     });
 
     return { accessToken };
@@ -122,12 +123,33 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
-    await this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id: userId },
-      data: { passwordHash },
+      data: {
+        passwordHash,
+        tokenVersion: { increment: 1 },
+      },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        tokenVersion: true,
+      },
     });
 
-    return { ok: true, message: '비밀번호가 변경되었습니다.' };
+    const accessToken = this.jwt.sign({
+      sub: updated.id,
+      email: updated.email,
+      role: updated.role,
+      type: 'access',
+      tokenVersion: updated.tokenVersion,
+    });
+
+    return {
+      ok: true,
+      message: '비밀번호가 변경되었습니다.',
+      accessToken,
+    };
   }
 
   async getMe(userId: string) {

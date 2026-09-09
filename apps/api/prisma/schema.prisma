@@ -86,6 +86,8 @@ model User {
   encryptedTotpSecret String?
   /// Set when plaintext secret was returned once via /auth/totp-setup. Re-reveal blocked after.
   totpSecretRevealedAt DateTime?
+  /// Incremented on password change so existing access JWTs fail validate().
+  tokenVersion Int        @default(0)
   createdAt    DateTime   @default(now())
 
   wallets    Wallet[]

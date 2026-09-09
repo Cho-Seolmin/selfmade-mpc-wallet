@@ -32,6 +32,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     email?: string;
     role?: string;
     type?: string;
+    tokenVersion?: number;
   }) {
     if (payload?.type === 'verify-email') {
       throw new UnauthorizedException(
@@ -49,11 +50,23 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
-      select: { id: true, email: true, role: true, status: true },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        status: true,
+        tokenVersion: true,
+      },
     });
 
     if (!user || user.status !== 'ACTIVE') {
       throw new UnauthorizedException('User is not active');
+    }
+
+    const tokenVersion =
+      typeof payload.tokenVersion === 'number' ? payload.tokenVersion : 0;
+    if (tokenVersion !== user.tokenVersion) {
+      throw new UnauthorizedException('Session expired');
     }
 
     return { sub: user.id, email: user.email, role: user.role };

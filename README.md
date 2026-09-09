@@ -50,8 +50,9 @@ test-token/     # Sepolia TestToken(TTK) Hardhat 배포·민팅 (지갑 런타�
 
 ### 1. 인증
 - 회원가입 / 로그인 (JWT httpOnly cookie)
+- 비밀번호 변경 시 `tokenVersion` 증가 → 다른 세션의 access JWT 무효화 (현재 세션은 새 쿠키)
 - 계정별 Google Authenticator TOTP (사용자별 random secret, `TOTP_ENCRYPTION_KEY`로 암호화 저장)
-- Settings에서 OTP secret / otpauth URL은 **서버 1회만 조회** 가능 · UI는 최대 10분 표시 후 숨김 (재조회 불가)
+- Settings에서 OTP secret / otpauth URL은 **`POST /auth/totp-setup` 1회만** (상태 변경, 이후 410) · UI는 최대 10분 표시 후 숨김
 
 ### 2. MPC 지갑 생성 (DKG)
 - 브라우저(A) + API(B) + Recovery(C) 2-of-3 DKG
@@ -198,14 +199,14 @@ cd ../recovery && npx prisma db push && npx prisma generate
 | 변수 | 설명 |
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL |
-| `JWT_SECRET` | JWT 서명 |
-| `TOTP_ENCRYPTION_KEY` | 계정별 TOTP secret AES-256 키 (64 hex, JWT와 분리) |
+| `JWT_SECRET` | JWT 서명 (**32바이트 이상**) |
+| `TOTP_ENCRYPTION_KEY` | 계정별 TOTP secret AES-256 키 (64 hex, JWT·Share B 키와 **다른** 값) |
 | `FRONTEND_URL` | CORS (예: `http://localhost:5173`) |
 | `SEPOLIA_RPC_URL` | Sepolia RPC — 잔액 조회·signed raw broadcast (`BACKEND_SIGNER_*` 불필요) |
 | `SEPOLIA_TEST_TOKEN_ADDRESS` | Sepolia TestToken(TTK) 컨트랙트. 잔액 표시·A+B ERC-20 출금·비상 TTK sweep (미설정 시 ETH만) |
-| `WALLET_ENCRYPTION_KEY` | Share B AES-256 키 (64 hex) |
+| `WALLET_ENCRYPTION_KEY` | Share B AES-256 키 (64 hex, TOTP 키와 **달라야** 함) |
 | `RECOVERY_BASE_URL` | `http://localhost:3001` |
-| `RECOVERY_SERVICE_TOKEN` | Recovery와 동일한 서비스 토큰 |
+| `RECOVERY_SERVICE_TOKEN` | Recovery와 동일한 서비스 토큰 (**32바이트 이상**) |
 
 **`apps/recovery/.env`**
 
@@ -213,7 +214,7 @@ cd ../recovery && npx prisma db push && npx prisma generate
 | --- | --- |
 | `RECOVERY_DATABASE_URL` | `file:./recovery.db` |
 | `PORT` | `3001` |
-| `RECOVERY_SERVICE_TOKEN` | API와 **동일** 값 |
+| `RECOVERY_SERVICE_TOKEN` | API와 **동일** 값 (32바이트 이상, API 부팅에서 검사) |
 | `RECOVERY_ENCRYPTION_KEY` | Share C AES 키 (Share B와 **다른** 64 hex) |
 
 **`apps/web/.env`**
@@ -222,10 +223,16 @@ cd ../recovery && npx prisma db push && npx prisma generate
 | --- | --- |
 | `VITE_API_URL` | `http://localhost:3000` |
 
-키 생성 예:
+키 생성 예 (Share B / TOTP / Share C AES 키는 **서로 다른** 64 hex):
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+JWT·Recovery 토큰 예 (32바이트 이상):
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 ```
 
 ### 3. 개발 서버 (터미널 3개)
@@ -250,8 +257,9 @@ Sepolia 데모가 클라우드에 올라가 있습니다.
 | Web | Vercel — [https://selfmade-mpc-wallet-web.vercel.app](https://selfmade-mpc-wallet-web.vercel.app) |
 | API · PostgreSQL · Recovery | Railway (`apps/web`만 Vercel, 나머지는 Railway) |
 
-- 웹 `VITE_API_URL` = API 공개 HTTPS, API `FRONTEND_URL` = Vercel origin (끝 슬래시 없음, CORS·쿠키)
-- Recovery는 public domain을 노출하지 않고 private network에서 Main API만 접근하도록 배포. CORS 역시 비활성화하여 정상적인 Browser 접근 경로를 제공하지 않음. API만 `RECOVERY_SERVICE_TOKEN`으로 호출. Share C용 SQLite는 Volume에 유지
+- 웹 `VITE_API_URL` = API 공개 HTTPS, API `FRONTEND_URL` = Vercel origin (끝 슬래시 없음, CORS·쿠키·CSRF Origin)
+- API는 `NODE_ENV=production`에서 `trust proxy: 1` (rate limit용 클라이언트 IP). 필수 env는 listen 전 검증 (`JWT_SECRET`·서비스 토큰 32바이트 이상, Share B 키 ≠ TOTP 키)
+- Postgres는 `prisma migrate deploy` 필요 (`User.tokenVersion` 포함). Recovery는 public domain을 노출하지 않고 private network에서 Main API만 접근하도록 배포. CORS 역시 비활성화하여 정상적인 Browser 접근 경로를 제공하지 않음. API만 `RECOVERY_SERVICE_TOKEN`으로 호출. Share C용 SQLite는 Volume에 유지
 - 배포 DB는 로컬 테스트 DB와 분리(빈 스키마). 시크릿은 호스트 env에만 둠
 
 확인한 흐름: 회원가입 → MPC 생성 → A+B 일반 출금 → OTP+B+C 비상 출금 → 지갑 재생성
@@ -276,7 +284,7 @@ Sepolia 데모가 클라우드에 올라가 있습니다.
 | `GET` | `/wallets/:id/audits` | 감사 로그 |
 | `POST` | `/wallets/:id/audit-events` | 브라우저 비민감 이벤트 보고 |
 | `GET` | `/auth/totp-status` | OTP 설정 여부 · secret 이미 공개됐는지 (평문 없음) |
-| `GET` | `/auth/totp-setup` | OTP secret / otpauth URL **1회만** (이후 410) |
+| `POST` | `/auth/totp-setup` | OTP secret / otpauth URL **1회만** (이후 410). 상태 변경이라 GET 아님 |
 
 Recovery (`:3001`, service token only). Share C는 Recovery 내부 DKG finalize에서만 생성합니다. HTTP로 평문 Share C를 넣는 경로는 없습니다.
 
@@ -313,11 +321,11 @@ npm run test:integration
 
 ## 보안 메모 (데모 기준)
 
-- Share / PIN은 로그·일반 API 응답에 넣지 않음. OTP 평문 secret은 `/auth/totp-setup` **1회 reveal만** (이후 410)
+- Share / PIN은 로그·일반 API 응답에 넣지 않음. OTP 평문 secret은 `POST /auth/totp-setup` **1회 reveal만** (이후 410)
 - A+B 출금 WYSIWYS: 브라우저가 unsigned `tx`로 digest 재검증 후 서명 (ERC-20 calldata는 TestToken 절)
 - Recovery는 public domain을 노출하지 않고 private network에서 Main API만 접근하도록 배포. CORS 역시 비활성화하여 정상적인 Browser 접근 경로를 제공하지 않음
 - Recovery File PIN은 PBKDF2-SHA256(210k) → AES-GCM
-- Share B / Share C 암호화 키 분리
+- Share B / Share C 암호화 키 분리. Share B 키(`WALLET_ENCRYPTION_KEY`)와 TOTP 키는 **같으면 API 부팅 실패**
 - Share C는 Recovery 내부 DKG에서만 생성. HTTP import(`PUT /shares`) 없음
 - 민감 데이터의 메모리 체류 시간을 줄이기 위해, 가능한 범위에서 명시적으로 buffer zeroization(`fill(0)`)과 WASM resource 해제(`free()`)를 수행한다. Node/WASM/JS runtime 복사본까지 완벽하게 지운다고 주장하지 않음
 - Share C는 `walletId`당 1행. 이미 행이 있으면(ACTIVE·RETIRED 포함) 다시 만들지 않음. 새 지갑은 새 DKG·새 `walletId`
@@ -325,6 +333,11 @@ npm run test:integration
 - `RETIRED` 이후 해당 지갑 재서명 불가
 - OTP 연속 실패 시 짧은 잠금 (인메모리)
 - 진행 중 A+B와 비상 B+C는 상호 배제 (지갑 row lock)
+- 비밀번호 변경 시 `tokenVersion` 증가 → 기존 access JWT 무효화 (현재 세션은 새 쿠키 재발급)
+- 쿠키가 붙은 `POST`/`PUT`/`PATCH`/`DELETE`는 Origin(없으면 Referer)이 `FRONTEND_URL`과 같아야 함. Bearer-only는 제외. CORS ≠ CSRF. Vercel/Railway는 `SameSite=None` 유지 (Lax면 크로스 사이트 쿠키 로그인 불가)
+- Helmet 보안 헤더. listen 전 env 검증: 필수 URL·64 hex 키, `JWT_SECRET`/`RECOVERY_SERVICE_TOKEN` 32바이트 이상, Share B 키 ≠ TOTP 키
+- 가입 / 로그인 / totp-setup / emergency OTP / DKG start만 IP rate limit. 서명 라운드는 제한하지 않음
+- 프로덕션(Railway)만 Express `trust proxy: 1`. rate limit은 `req.ip`(클라이언트). 로컬은 직결이라 프록시를 믿지 않음 (`X-Forwarded-For` 스푸핑 방지). 강제: `TRUST_PROXY=1|0`
 
 ---
 
@@ -354,6 +367,6 @@ npm run test:integration
 ## 스택
 
 - **Web:** React 19, Vite, ethers v6  
-- **API:** NestJS 11, Prisma 6, PostgreSQL, speakeasy  
+- **API:** NestJS 11, Prisma 6, PostgreSQL, speakeasy, Helmet  
 - **Recovery:** NestJS, SQLite  
 - **MPC:** `@silencelaboratories/dkls-wasm-ll-*`, `packages/mpc-crypto`

@@ -47,6 +47,7 @@ describe('JwtStrategy', () => {
       email: 'a@b.com',
       role: 'USER',
       status: 'ACTIVE',
+      tokenVersion: 0,
     });
 
     await expect(
@@ -60,5 +61,24 @@ describe('JwtStrategy', () => {
       email: 'a@b.com',
       role: 'USER',
     });
+  });
+
+  it('rejects access tokens after password change (tokenVersion mismatch)', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      email: 'a@b.com',
+      role: 'USER',
+      status: 'ACTIVE',
+      tokenVersion: 2,
+    });
+
+    await expect(
+      strategy.validate({
+        sub: 'user-1',
+        email: 'a@b.com',
+        type: 'access',
+        tokenVersion: 0,
+      }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 });

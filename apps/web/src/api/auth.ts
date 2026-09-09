@@ -20,9 +20,9 @@ export async function getTotpStatus(): Promise<TotpSetupStatus> {
   return res.data;
 }
 
-/** One-time reveal — second call returns 410. */
-export async function getTotpSetup(): Promise<TotpSetup> {
-  const res = await api.get<TotpSetup>("/auth/totp-setup");
+/** One-time reveal — second call returns 410. Mutates totpSecretRevealedAt. */
+export async function revealTotpSetup(): Promise<TotpSetup> {
+  const res = await api.post<TotpSetup>("/auth/totp-setup");
   return res.data;
 }
 

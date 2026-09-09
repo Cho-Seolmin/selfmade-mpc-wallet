@@ -9,6 +9,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { DkgOrchestratorService } from '../mpc/dkg-orchestrator.service';
 import { SignOrchestratorService } from '../mpc/sign-orchestrator.service';
@@ -52,7 +53,8 @@ export class WalletController {
 
   /** Start 2-of-3 DKG (browser sends party A round-1 message). */
   @Post('mpc/dkg/start')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   dkgStart(@Req() req: any, @Body() dto: DkgStartDto) {
     return this.dkg.start(req.user.sub, dto.message);
   }
@@ -173,7 +175,8 @@ export class WalletController {
    * Sets wallet to RECOVERY_PENDING. B+C last withdraw is a later step.
    */
   @Post(':id/emergency/start')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   startEmergency(
     @Req() req: any,
     @Param('id') id: string,
@@ -197,7 +200,8 @@ export class WalletController {
    * Retires the wallet on success.
    */
   @Post(':id/emergency/last-withdraw')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   emergencyLastWithdraw(
     @Req() req: any,
     @Param('id') id: string,

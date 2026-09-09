@@ -90,10 +90,17 @@ export class WithdrawGateway implements OnGatewayConnection {
 
       const user = await this.prisma.user.findUnique({
         where: { id: payload.sub },
-        select: { id: true, status: true },
+        select: { id: true, status: true, tokenVersion: true },
       });
 
       if (!user || user.status !== 'ACTIVE') {
+        client.disconnect(true);
+        return;
+      }
+
+      const tokenVersion =
+        typeof payload.tokenVersion === 'number' ? payload.tokenVersion : 0;
+      if (tokenVersion !== user.tokenVersion) {
         client.disconnect(true);
         return;
       }

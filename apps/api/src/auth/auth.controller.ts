@@ -9,7 +9,7 @@ import {
   UseGuards,
   Req,
 } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
@@ -32,6 +32,8 @@ export class AuthController {
   ) {}
 
   @Post('register')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async register(@Body() dto: RegisterDto) {
     return this.auth.register(dto.email, dto.password);
   }
@@ -74,9 +76,10 @@ export class AuthController {
   }
 
   /** One-time plaintext OTP secret reveal (subsequent calls → 410). */
-  @Get('totp-setup')
-  @UseGuards(JwtAuthGuard)
-  getTotpSetup(@Req() req: any) {
+  @Post('totp-setup')
+  @UseGuards(JwtAuthGuard, ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  revealTotpSetup(@Req() req: any) {
     const userId = req.user.sub as string;
     const email = req.user.email as string;
     return this.totp.revealSetupOnce(userId, email);
@@ -84,11 +87,17 @@ export class AuthController {
 
   @Patch('password')
   @UseGuards(JwtAuthGuard)
-  changePassword(@Req() req: any, @Body() dto: ChangePasswordDto) {
-    return this.auth.changePassword(
+  async changePassword(
+    @Req() req: any,
+    @Body() dto: ChangePasswordDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { accessToken, ...body } = await this.auth.changePassword(
       req.user.sub,
       dto.currentPassword,
       dto.newPassword,
     );
+    res.cookie(ACCESS_COOKIE, accessToken, getAccessCookieOptions());
+    return body;
   }
 }

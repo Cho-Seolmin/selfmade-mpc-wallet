@@ -39,6 +39,7 @@
     "cookie-parser": "^1.4.7",
     "dotenv": "^16.4.7",
     "ethers": "^6.16.0",
+    "helmet": "^8.3.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "reflect-metadata": "^0.2.2",
@@ -88,7 +89,7 @@
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "transformIgnorePatterns": [
-      "/node_modules/(?!(@selfmade)/)"
+      "/node_modules/(?!(@selfmade|@nestjs/schedule)/)"
     ],
     "moduleNameMapper": {
       "^@selfmade/mpc-crypto$": "<rootDir>/../../../packages/mpc-crypto/src/index.ts"

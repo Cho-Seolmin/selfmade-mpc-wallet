@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getMe, changePassword, getTotpSetup, getTotpStatus } from "../api/auth";
+import { getMe, changePassword, revealTotpSetup, getTotpStatus } from "../api/auth";
 import { getPreferences, updatePreferences } from "../api/settings";
 import { getSystemStatus } from "../api/system";
 import type { Me, TotpSetup } from "../types/auth";
@@ -176,7 +176,7 @@ export default function SettingsPage() {
     setTotpError("");
     setTotpLoading(true);
     try {
-      const totp = await getTotpSetup();
+      const totp = await revealTotpSetup();
       setTotpSetup(totp);
       setTotpVisibleUntil(Date.now() + TOTP_REVEAL_MS);
       setTotpAlreadyRevealed(false);
