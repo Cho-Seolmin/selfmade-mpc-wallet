@@ -172,7 +172,7 @@ export default function SettingsPage() {
     setTotpAlreadyRevealed(true);
   };
 
-  const revealTotpSetup = async () => {
+  const handleRevealTotpSetup = async () => {
     setTotpError("");
     setTotpLoading(true);
     try {
@@ -355,7 +355,7 @@ export default function SettingsPage() {
               <button
                 type="button"
                 className="btn btn--secondary"
-                onClick={revealTotpSetup}
+                onClick={handleRevealTotpSetup}
                 disabled={totpLoading}
                 style={{ marginBottom: "14px" }}
               >
