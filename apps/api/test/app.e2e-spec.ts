@@ -42,9 +42,14 @@ describe('App (e2e)', () => {
     await request(app.getHttpServer()).get('/wallets/summary').expect(401);
   });
 
+  const frontendOrigin = (
+    process.env.FRONTEND_URL ?? 'http://localhost:5173'
+  ).replace(/\/$/, '');
+
   it('POST /auth/login rejects a malformed email via the global ValidationPipe', async () => {
     await request(app.getHttpServer())
       .post('/auth/login')
+      .set('Origin', frontendOrigin)
       .send({ email: 'not-an-email', password: 'x' })
       .expect(400);
   });
@@ -52,7 +57,16 @@ describe('App (e2e)', () => {
   it('POST /auth/login rejects unknown credentials', async () => {
     await request(app.getHttpServer())
       .post('/auth/login')
+      .set('Origin', frontendOrigin)
       .send({ email: 'no-such-user@example.com', password: 'wrongpassword' })
       .expect(401);
+  });
+
+  it('POST /auth/login rejects a mismatched Origin', async () => {
+    await request(app.getHttpServer())
+      .post('/auth/login')
+      .set('Origin', 'https://evil.example')
+      .send({ email: 'no-such-user@example.com', password: 'wrongpassword' })
+      .expect(403);
   });
 });

@@ -9,10 +9,26 @@ import { frontendOrigin } from '../../config/api-env';
 import { ACCESS_COOKIE } from '../cookie.util';
 
 const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const LOGIN_PATH = '/auth/login';
 
 function cookiePresent(req: Request): boolean {
   const token = req.cookies?.[ACCESS_COOKIE];
   return typeof token === 'string' && token.length > 0;
+}
+
+function requestPathname(req: Request): string {
+  const raw =
+    (typeof req.path === 'string' && req.path !== '' ? req.path : null) ??
+    (typeof req.url === 'string' ? req.url : '');
+  const pathname = raw.split('?')[0] ?? '';
+  if (pathname.length > 1 && pathname.endsWith('/')) {
+    return pathname.slice(0, -1);
+  }
+  return pathname;
+}
+
+function isLoginPost(req: Request): boolean {
+  return req.method.toUpperCase() === 'POST' && requestPathname(req) === LOGIN_PATH;
 }
 
 function headerOrigin(req: Request): string | null {
@@ -38,16 +54,20 @@ function isUnsafeMethod(req: Request): boolean {
 }
 
 /**
- * Cookie-authenticated CSRF defense for cross-site (SameSite=None) deploys.
+ * CSRF defense for cross-site (SameSite=None) deploys.
  * CORS allowlists who can *read* responses; this checks Origin/Referer on
- * state-changing requests that actually send the access cookie.
+ * state-changing requests that send the access cookie, and on POST /auth/login
+ * even when no cookie is present yet (login CSRF).
  * Bearer-only requests are not CSRF (the browser will not attach that header).
  */
 @Injectable()
 export class CsrfOriginGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
-    if (!isUnsafeMethod(req) || !cookiePresent(req)) {
+    if (!isUnsafeMethod(req)) {
+      return true;
+    }
+    if (!cookiePresent(req) && !isLoginPost(req)) {
       return true;
     }
 

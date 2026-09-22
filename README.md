@@ -334,7 +334,8 @@ npm run test:integration
 - OTP 연속 실패 시 짧은 잠금 (인메모리)
 - 진행 중 A+B와 비상 B+C는 상호 배제 (지갑 row lock)
 - 비밀번호 변경 시 `tokenVersion` 증가 → 기존 access JWT 무효화 (현재 세션은 새 쿠키 재발급)
-- 쿠키가 붙은 `POST`/`PUT`/`PATCH`/`DELETE`는 Origin(없으면 Referer)이 `FRONTEND_URL`과 같아야 함. Bearer-only는 제외. CORS ≠ CSRF. Vercel/Railway는 `SameSite=None` 유지 (Lax면 크로스 사이트 쿠키 로그인 불가)
+- 쿠키가 붙은 `POST`/`PUT`/`PATCH`/`DELETE`는 Origin(없으면 Referer)이 `FRONTEND_URL`과 같아야 함. `POST /auth/login`은 쿠키가 없어도 같은 Origin/Referer 검사를 한다. Bearer-only는 제외. CORS ≠ CSRF. Vercel/Railway는 `SameSite=None` 유지 (Lax면 크로스 사이트 쿠키 로그인 불가)
+- Vercel 프론트 응답 CSP (`apps/web/vercel.json`): `script-src 'self'` + DKLs WASM용 `'wasm-unsafe-eval'`. `connect-src`는 자기 origin과 Railway API만. 인라인 스크립트/`'unsafe-inline'`/`'unsafe-eval'`/`*` 없음
 - Helmet 보안 헤더. listen 전 env 검증: 필수 URL·64 hex 키, `JWT_SECRET`/`RECOVERY_SERVICE_TOKEN` 32바이트 이상, Share B 키 ≠ TOTP 키
 - 가입 / 로그인 / totp-setup / emergency OTP / DKG start만 IP rate limit. 서명 라운드는 제한하지 않음
 - 프로덕션(Railway)만 Express `trust proxy: 1`. rate limit은 `req.ip`(클라이언트). 로컬은 직결이라 프록시를 믿지 않음 (`X-Forwarded-For` 스푸핑 방지). 강제: `TRUST_PROXY=1|0`

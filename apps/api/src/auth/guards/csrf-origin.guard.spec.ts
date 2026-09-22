@@ -30,12 +30,64 @@ describe('CsrfOriginGuard', () => {
     ).toBe(true);
   });
 
-  it('allows login POST without an access cookie', () => {
+  it('allows login POST from FRONTEND_URL without an access cookie', () => {
     expect(
       guard.canActivate(
         ctx({
           method: 'POST',
           url: '/auth/login',
+          cookies: {},
+          headers: { origin: 'http://localhost:5173' },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('allows login POST when only Referer matches FRONTEND_URL', () => {
+    expect(
+      guard.canActivate(
+        ctx({
+          method: 'POST',
+          url: '/auth/login',
+          cookies: {},
+          headers: { referer: 'http://localhost:5173/login' },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects login POST from another origin without an access cookie', () => {
+    expect(() =>
+      guard.canActivate(
+        ctx({
+          method: 'POST',
+          url: '/auth/login',
+          cookies: {},
+          headers: { origin: 'https://evil.example' },
+        }),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('rejects login POST with neither Origin nor Referer', () => {
+    expect(() =>
+      guard.canActivate(
+        ctx({
+          method: 'POST',
+          url: '/auth/login',
+          cookies: {},
+          headers: {},
+        }),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('still allows register POST without an access cookie or Origin', () => {
+    expect(
+      guard.canActivate(
+        ctx({
+          method: 'POST',
+          url: '/auth/register',
           cookies: {},
           headers: {},
         }),
